@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SoundCloud Archiver</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                --bg: #05000d;
+                --panel: #0a0418;
+                --panel-2: #110826;
+                --text: #f3eaff;
+                --muted: #9a8fc7;
+                --border: #2a1255;
+                --neon: #00f0ff;
+                --neon-2: #ff2bd6;
+                --neon-3: #b026ff;
+                --neon-4: #f9f871;
+                --good: #6dffb6;
+                --bad: #ff4d6d;
+                --info: #93c5fd;
+            }
+            @property --angle {
+                syntax: "<angle>";
+                inherits: false;
+                initial-value: 0deg;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            html,
+            body {
+                height: 100%;
+            }
+            body {
+                font-family:
+                    ui-sans-serif,
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                background: var(--bg);
+                color: var(--text);
+                margin: 0;
+                padding: 1.5rem 1rem;
+                line-height: 1.5;
+                position: relative;
+                overflow-x: hidden;
+                animation: crt-flicker 6s steps(1, end) infinite;
+            }
+            @keyframes crt-flicker {
+                0%,
+                100% {
+                    filter: none;
+                }
+                7% {
+                    filter: brightness(1.08) saturate(1.2);
+                }
+                7.5% {
+                    filter: brightness(0.92);
+                }
+                8% {
+                    filter: none;
+                }
+                47% {
+                    filter: brightness(1.06);
+                }
+                47.4% {
+                    filter: brightness(0.9) hue-rotate(-6deg);
+                }
+                48% {
+                    filter: none;
+                }
+            }
+            /* moving neon grid */
+            body::before {
+                content: "";
+                position: fixed;
+                inset: -50%;
+                z-index: 0;
+                pointer-events: none;
+                background-image:
+                    linear-gradient(
+                        rgba(0, 240, 255, 0.18) 1px,
+                        transparent 1px
+                    ),
+                    linear-gradient(
+                        90deg,
+                        rgba(255, 43, 214, 0.18) 1px,
+                        transparent 1px
+                    );
+                background-size: 40px 40px;
+                -webkit-mask-image: radial-gradient(
+                    ellipse at 50% 30%,
+                    black 0,
+                    transparent 70%
+                );
+                mask-image: radial-gradient(
+                    ellipse at 50% 30%,
+                    black 0,
+                    transparent 70%
+                );
+                animation: grid-drift 18s linear infinite;
+            }
+            @keyframes grid-drift {
+                0% {
+                    transform: translate(0, 0);
+                }
+                100% {
+                    transform: translate(40px, 40px);
+                }
+            }
+            /* pulsing radial color washes + scanlines */
+            body::after {
+                content: "";
+                position: fixed;
+                inset: 0;
+                z-index: 0;
+                pointer-events: none;
+                background:
+                    repeating-linear-gradient(
+                        to bottom,
+                        rgba(0, 0, 0, 0) 0px,
+                        rgba(0, 0, 0, 0) 2px,
+                        rgba(0, 0, 0, 0.18) 3px,
+                        rgba(0, 0, 0, 0) 4px
+                    ),
+                    radial-gradient(
+                        60vw 50vh at 15% 0%,
+                        rgba(0, 240, 255, 0.22),
+                        transparent 65%
+                    ),
+                    radial-gradient(
+                        55vw 45vh at 90% 110%,
+                        rgba(255, 43, 214, 0.22),
+                        transparent 65%
+                    ),
+                    radial-gradient(
+                        45vw 40vh at 50% 50%,
+                        rgba(176, 38, 255, 0.16),
+                        transparent 70%
+                    );
+                animation: wash-pulse 5s ease-in-out infinite;
+                mix-blend-mode: screen;
+            }
+            @keyframes wash-pulse {
+                0%,
+                100% {
+                    opacity: 0.85;
+                }
+                50% {
+                    opacity: 1;
+                }
+            }
+            .wrap {
+                max-width: 1200px;
+                margin-inline: auto;
+                position: relative;
+                z-index: 1;
+            }
+
+            header {
+                margin-bottom: 1.5rem;
+            }
+            .title-row {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 1rem;
+                flex-wrap: wrap;
+            }
+            h1 {
+                margin: 0;
+                font-size: 2.1rem;
+                font-weight: 800;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+                color: #fff;
+                background: linear-gradient(
+                    90deg,
+                    #00f0ff,
+                    #b026ff,
+                    #ff2bd6,
+                    #f9f871,
+                    #00f0ff
+                );
+                background-size: 300% 100%;
+                -webkit-background-clip: text;
+                background-clip: text;
+                -webkit-text-fill-color: transparent;
+                animation:
+                    hue-slide 6s linear infinite,
+                    glitch 3.4s infinite steps(1, end);
+                text-shadow:
+                    0 0 4px rgba(0, 240, 255, 0.7),
+                    0 0 10px rgba(0, 240, 255, 0.6),
+                    0 0 22px rgba(255, 43, 214, 0.55),
+                    0 0 40px rgba(176, 38, 255, 0.5),
+                    0 0 70px rgba(255, 43, 214, 0.4);
+                position: relative;
+            }
+            h1::after {
+                content: "";
+                position: absolute;
+                left: 0;
+                right: 0;
+                bottom: -0.35rem;
+                height: 2px;
+                background: linear-gradient(
+                    90deg,
+                    transparent,
+                    var(--neon),
+                    var(--neon-2),
+                    var(--neon-3),
+                    transparent
+                );
+                background-size: 200% 100%;
+                box-shadow:
+                    0 0 10px var(--neon),
+                    0 0 20px var(--neon-2);
+                animation: bar-slide 3s linear infinite;
+            }
+            @keyframes hue-slide {
+                0% {
+                    background-position: 0% 50%;
+                }
+                100% {
+                    background-position: 300% 50%;
+                }
+            }
+            @keyframes bar-slide {
+                0% {
+                    background-position: 0% 50%;
+                }
+                100% {
+                    background-position: 200% 50%;
+                }
+            }
+            @keyframes glitch {
+                0%,
+                92%,
+                100% {
+                    transform: translate(0, 0);
+                    filter: none;
+                }
+                93% {
+                    transform: translate(-2px, 0);
+                    filter: hue-rotate(20deg);
+                }
+                94% {
+                    transform: translate(2px, -1px);
+                    filter: hue-rotate(-30deg);
+                }
+                95% {
+                    transform: translate(-1px, 1px);
+                    filter: none;
+                }
+            }
+            .tag {
+                color: var(--neon);
+                font-size: 0.85rem;
+                margin-top: 0.65rem;
+                text-transform: uppercase;
+                letter-spacing: 0.18em;
+                text-shadow:
+                    0 0 6px var(--neon),
+                    0 0 14px rgba(0, 240, 255, 0.5);
+            }
+            a {
+                color: var(--neon-2);
+                text-decoration: none;
+                text-shadow: 0 0 6px rgba(255, 43, 214, 0.6);
+            }
+            a:hover {
+                color: var(--neon-4);
+                text-shadow:
+                    0 0 10px var(--neon-4),
+                    0 0 20px var(--neon-2);
+            }
+            code {
+                background: var(--panel-2);
+                padding: 0.05em 0.45em;
+                border-radius: 4px;
+                font-size: 0.85em;
+                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                color: var(--neon-4);
+                text-shadow: 0 0 6px rgba(249, 248, 113, 0.7);
+                border: 1px solid rgba(249, 248, 113, 0.25);
+                box-shadow: inset 0 0 8px rgba(249, 248, 113, 0.1);
+            }
+            .muted {
+                color: var(--muted);
+                font-size: 0.85em;
+            }
+
+            .grid {
+                display: grid;
+                gap: 1.5rem;
+            }
+            .col {
+                display: grid;
+                gap: 1.5rem;
+                align-content: start;
+            }
+
+            /* panels with rotating conic-gradient neon halo */
+            .panel {
+                position: relative;
+                background:
+                    linear-gradient(
+                        180deg,
+                        rgba(176, 38, 255, 0.06),
+                        rgba(0, 240, 255, 0.03)
+                    ),
+                    var(--panel);
+                border: 1px solid transparent;
+                border-radius: 12px;
+                padding: 1.2rem 1.4rem;
+                box-shadow:
+                    0 0 18px rgba(0, 240, 255, 0.18),
+                    0 0 36px rgba(255, 43, 214, 0.12),
+                    inset 0 0 22px rgba(0, 240, 255, 0.04);
+            }
+            .panel::before {
+                content: "";
+                position: absolute;
+                inset: -2px;
+                z-index: -1;
+                border-radius: 14px;
+                padding: 2px;
+                background: conic-gradient(
+                    from var(--angle),
+                    var(--neon),
+                    var(--neon-3),
+                    var(--neon-2),
+                    var(--neon-4),
+                    var(--neon)
+                );
+                -webkit-mask:
+                    linear-gradient(#fff 0 0) content-box,
+                    linear-gradient(#fff 0 0);
+                -webkit-mask-composite: xor;
+                mask-composite: exclude;
+                filter: blur(0.5px) drop-shadow(0 0 8px rgba(0, 240, 255, 0.5));
+                animation: spin-hue 6s linear infinite;
+            }
+            @keyframes spin-hue {
+                to {
+                    --angle: 360deg;
+                }
+            }
+
+            .howto h2 {
+                font-size: 0.8rem;
+                text-transform: uppercase;
+                letter-spacing: 0.22em;
+                color: var(--neon-2);
+                margin: 0 0 0.7rem;
+                font-weight: 700;
+                text-shadow:
+                    0 0 8px var(--neon-2),
+                    0 0 16px rgba(255, 43, 214, 0.5);
+            }
+            .howto ol {
+                margin: 0;
+                padding-left: 1.2rem;
+            }
+            .howto ol li {
+                margin: 0.3rem 0;
+                font-size: 0.92rem;
+            }
+            .howto ol li::marker {
+                color: var(--neon);
+            }
+            .howto .note {
+                color: var(--muted);
+                font-size: 0.83rem;
+                margin: 0.8rem 0 0;
+            }
+            .howto strong {
+                color: var(--neon-4);
+                text-shadow:
+                    0 0 8px var(--neon-4),
+                    0 0 14px rgba(249, 248, 113, 0.5);
+            }
+
+            form {
+                display: grid;
+                gap: 1rem;
+            }
+            label {
+                display: grid;
+                gap: 0.35rem;
+                font-size: 0.72rem;
+                color: var(--neon);
+                text-transform: uppercase;
+                letter-spacing: 0.18em;
+                font-weight: 700;
+                text-shadow:
+                    0 0 6px var(--neon),
+                    0 0 12px rgba(0, 240, 255, 0.5);
+            }
+            label.inline {
+                display: flex;
+                align-items: center;
+                gap: 0.6rem;
+                cursor: pointer;
+                text-transform: none;
+                letter-spacing: 0;
+                font-size: 0.88rem;
+                color: var(--text);
+                text-shadow: none;
+                font-weight: 400;
+            }
+            label.inline input {
+                width: auto;
+                accent-color: var(--neon-2);
+            }
+            input[type="text"],
+            input[type="url"] {
+                background: rgba(5, 0, 13, 0.7);
+                color: var(--neon);
+                border: 1px solid var(--neon);
+                border-radius: 6px;
+                padding: 0.65rem 0.85rem;
+                font: inherit;
+                width: 100%;
+                text-shadow: 0 0 6px rgba(0, 240, 255, 0.7);
+                box-shadow:
+                    0 0 0 1px rgba(0, 240, 255, 0.2),
+                    0 0 14px rgba(0, 240, 255, 0.25),
+                    inset 0 0 12px rgba(0, 240, 255, 0.12);
+                transition: all 200ms;
+            }
+            input[type="text"]::placeholder,
+            input[type="url"]::placeholder {
+                color: rgba(0, 240, 255, 0.4);
+            }
+            input[type="text"]:focus,
+            input[type="url"]:focus {
+                outline: none;
+                border-color: var(--neon-2);
+                color: var(--neon-2);
+                text-shadow: 0 0 6px rgba(255, 43, 214, 0.7);
+                box-shadow:
+                    0 0 0 1px var(--neon-2),
+                    0 0 22px rgba(255, 43, 214, 0.6),
+                    0 0 44px rgba(255, 43, 214, 0.3),
+                    inset 0 0 18px rgba(255, 43, 214, 0.18);
+            }
+
+            button {
+                position: relative;
+                background: linear-gradient(
+                    135deg,
+                    rgba(0, 240, 255, 0.15),
+                    rgba(255, 43, 214, 0.15)
+                );
+                color: #fff;
+                border: 2px solid var(--neon);
+                border-radius: 6px;
+                padding: 0.85rem 1.8rem;
+                font: inherit;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: 0.22em;
+                font-size: 0.95rem;
+                cursor: pointer;
+                justify-self: start;
+                text-shadow:
+                    0 0 6px var(--neon),
+                    0 0 14px var(--neon),
+                    0 0 28px var(--neon-2);
+                box-shadow:
+                    0 0 14px var(--neon),
+                    0 0 28px rgba(0, 240, 255, 0.5),
+                    0 0 56px rgba(255, 43, 214, 0.35),
+                    inset 0 0 18px rgba(0, 240, 255, 0.25);
+                animation: btn-pulse 1.6s ease-in-out infinite;
+                transition: transform 120ms;
+            }
+            @keyframes btn-pulse {
+                0%,
+                100% {
+                    box-shadow:
+                        0 0 14px var(--neon),
+                        0 0 28px rgba(0, 240, 255, 0.5),
+                        0 0 56px rgba(255, 43, 214, 0.35),
+                        inset 0 0 18px rgba(0, 240, 255, 0.25);
+                }
+                50% {
+                    box-shadow:
+                        0 0 22px var(--neon-2),
+                        0 0 44px rgba(255, 43, 214, 0.7),
+                        0 0 80px rgba(176, 38, 255, 0.5),
+                        inset 0 0 26px rgba(255, 43, 214, 0.35);
+                }
+            }
+            button:hover:not(:disabled) {
+                transform: translateY(-1px) scale(1.02);
+                border-color: var(--neon-4);
+            }
+            button:disabled {
+                color: var(--muted);
+                border-color: var(--border);
+                text-shadow: none;
+                box-shadow: none;
+                cursor: not-allowed;
+                animation: none;
+                background: transparent;
+            }
+
+            .status-row {
+                display: flex;
+                align-items: center;
+                gap: 0.7rem;
+                margin-bottom: 0.6rem;
+                font-size: 0.78rem;
+                color: var(--neon-3);
+                text-transform: uppercase;
+                letter-spacing: 0.22em;
+                font-weight: 700;
+                text-shadow: 0 0 8px var(--neon-3);
+            }
+            .dot {
+                display: inline-block;
+                width: 11px;
+                height: 11px;
+                border-radius: 50%;
+                background: var(--muted);
+            }
+            .dot.info {
+                background: var(--info);
+                box-shadow:
+                    0 0 8px var(--info),
+                    0 0 18px var(--info),
+                    0 0 32px var(--info);
+                animation: pulse 1.2s ease-in-out infinite;
+            }
+            .dot.done {
+                background: var(--good);
+                box-shadow:
+                    0 0 10px var(--good),
+                    0 0 22px var(--good),
+                    0 0 40px var(--good);
+                animation: pulse 1.6s ease-in-out infinite;
+            }
+            .dot.error {
+                background: var(--bad);
+                box-shadow:
+                    0 0 10px var(--bad),
+                    0 0 22px var(--bad),
+                    0 0 40px var(--bad);
+                animation: pulse 0.8s ease-in-out infinite;
+            }
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.35;
+                }
+            }
+
+            .server-status {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.6rem;
+                padding: 0.45rem 0.95rem;
+                border: 1px solid var(--border);
+                border-radius: 999px;
+                font-size: 0.72rem;
+                text-transform: uppercase;
+                letter-spacing: 0.22em;
+                font-weight: 700;
+                color: var(--muted);
+                background: rgba(10, 4, 24, 0.7);
+                backdrop-filter: blur(6px);
+                transition: all 250ms;
+            }
+            .server-status .ss-dot {
+                width: 9px;
+                height: 9px;
+                border-radius: 50%;
+                background: var(--muted);
+                transition: all 250ms;
+            }
+            .server-status.up {
+                color: var(--good);
+                border-color: var(--good);
+                box-shadow:
+                    0 0 14px var(--good),
+                    0 0 30px rgba(109, 255, 182, 0.5),
+                    inset 0 0 12px rgba(109, 255, 182, 0.2);
+                text-shadow: 0 0 8px var(--good);
+            }
+            .server-status.up .ss-dot {
+                background: var(--good);
+                box-shadow:
+                    0 0 8px var(--good),
+                    0 0 18px var(--good),
+                    0 0 30px var(--good);
+                animation: pulse 1.4s ease-in-out infinite;
+            }
+            .server-status.down {
+                color: var(--bad);
+                border-color: var(--bad);
+                box-shadow:
+                    0 0 14px var(--bad),
+                    0 0 30px rgba(255, 77, 109, 0.55),
+                    inset 0 0 12px rgba(255, 77, 109, 0.25);
+                text-shadow: 0 0 8px var(--bad);
+                animation: alarm 0.6s ease-in-out infinite;
+            }
+            .server-status.down .ss-dot {
+                background: var(--bad);
+                box-shadow:
+                    0 0 8px var(--bad),
+                    0 0 18px var(--bad),
+                    0 0 30px var(--bad);
+            }
+            @keyframes alarm {
+                0%,
+                100% {
+                    transform: translateX(0);
+                }
+                25% {
+                    transform: translateX(-1px);
+                }
+                75% {
+                    transform: translateX(1px);
+                }
+            }
+
+            pre#log {
+                background:
+                    repeating-linear-gradient(
+                        to bottom,
+                        rgba(0, 0, 0, 0) 0px,
+                        rgba(0, 0, 0, 0) 2px,
+                        rgba(0, 240, 255, 0.04) 3px,
+                        rgba(0, 0, 0, 0) 4px
+                    ),
+                    #03000a;
+                border: 1px solid var(--neon-3);
+                border-radius: 8px;
+                padding: 1.1rem;
+                min-height: 260px;
+                max-height: 60vh;
+                overflow: auto;
+                white-space: pre-wrap;
+                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                font-size: 0.82rem;
+                line-height: 1.55;
+                margin: 0;
+                color: #b9f5ff;
+                text-shadow:
+                    0 0 4px rgba(0, 240, 255, 0.6),
+                    0 0 10px rgba(0, 240, 255, 0.3);
+                box-shadow:
+                    0 0 18px rgba(176, 38, 255, 0.4),
+                    0 0 36px rgba(255, 43, 214, 0.25),
+                    inset 0 0 32px rgba(0, 240, 255, 0.08);
+            }
+
+            .status-done {
+                color: var(--good);
+                text-shadow:
+                    0 0 8px var(--good),
+                    0 0 18px rgba(109, 255, 182, 0.6);
+            }
+            .status-error {
+                color: var(--bad);
+                text-shadow:
+                    0 0 8px var(--bad),
+                    0 0 18px rgba(255, 77, 109, 0.6);
+            }
+            .status-info {
+                color: var(--info);
+                text-shadow:
+                    0 0 8px var(--info),
+                    0 0 18px rgba(147, 197, 253, 0.6);
+            }
+
+            @media (min-width: 900px) {
+                body {
+                    padding: 2.5rem 1.5rem;
+                }
+                .grid {
+                    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+                    align-items: start;
+                }
+                .col-out {
+                    position: sticky;
+                    top: 1.5rem;
+                }
+                pre#log {
+                    max-height: calc(100vh - 9rem);
+                    min-height: 360px;
+                }
+                h1 {
+                    font-size: 2.6rem;
+                }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                *,
+                *::before,
+                *::after {
+                    animation: none !important;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <header>
+                <div class="title-row">
+                    <div>
+                        <h1>SoundCloud Archiver</h1>
+                        <div class="tag">
+                            Archive your own SoundCloud uploads as MP3, locally.
+                        </div>
+                    </div>
+                    <div class="server-status" id="server-status">
+                        <span class="ss-dot"></span>
+                        <span class="ss-label">checking…</span>
+                    </div>
+                </div>
+            </header>
+
+            <div class="grid">
+                <div class="col col-in">
+                    <section class="panel howto">
+                        <h2>How to use</h2>
+                        <ol>
+                            <li>
+                                Log into
+                                <a href="https://soundcloud.com"
+                                    >soundcloud.com</a
+                                >
+                                in the same browser you're using right now.
+                            </li>
+                            <li>Paste a track or playlist URL below.</li>
+                            <li>
+                                Hit <strong>Download</strong>. Files save as
+                                <code>[Artist] Title.mp3</code> in
+                                <code>./downloads</code>.
+                            </li>
+                        </ol>
+                        <p class="note">
+                            The tool works for any track you can play in your
+                            browser. DRM-locked tracks (most major-label
+                            catalog) automatically fall back to YouTube via
+                            <code>yt-dlp</code>; those files are prefixed
+                            <code>[YouTube]</code>.
+                        </p>
+                    </section>
+
+                    <form id="f" class="panel">
+                        <label
+                            >SoundCloud URL
+                            <input
+                                id="url"
+                                type="url"
+                                required
+                                placeholder="https://soundcloud.com/you/your-track"
+                            />
+                        </label>
+                        <label
+                            >Output directory
+                            <span class="muted">(optional)</span>
+                            <input
+                                id="output_dir"
+                                type="text"
+                                placeholder="leave blank for ./downloads"
+                            />
+                        </label>
+                        <button id="go" type="submit">Download</button>
+                    </form>
+                </div>
+
+                <div class="col col-out">
+                    <div class="status-row">
+                        <span class="dot" id="dot"></span>
+                        <span id="status">idle</span>
+                    </div>
+                    <pre id="log"></pre>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            const form = document.getElementById("f");
+            const logEl = document.getElementById("log");
+            const statusEl = document.getElementById("status");
+            const dotEl = document.getElementById("dot");
+            const goBtn = document.getElementById("go");
+
+            form.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                logEl.replaceChildren();
+                setStatus("starting…", "info");
+                goBtn.disabled = true;
+
+                const body = {
+                    url: document.getElementById("url").value,
+                    output_dir:
+                        document.getElementById("output_dir").value || null,
+                };
+
+                try {
+                    const resp = await fetch("/api/download", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body),
+                    });
+                    if (!resp.ok) {
+                        setStatus("http " + resp.status, "error");
+                        logEl.textContent = await resp.text();
+                        goBtn.disabled = false;
+                        return;
+                    }
+                    await readStream(resp.body.getReader());
+                } catch (err) {
+                    setStatus("network error", "error");
+                    appendLine(String(err));
+                } finally {
+                    goBtn.disabled = false;
+                }
+            });
+
+            async function readStream(reader) {
+                const decoder = new TextDecoder();
+                let buf = "";
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    let idx;
+                    while ((idx = buf.indexOf("\n\n")) !== -1) {
+                        const chunk = buf.slice(0, idx);
+                        buf = buf.slice(idx + 2);
+                        for (const line of chunk.split("\n")) {
+                            if (line.startsWith("data: "))
+                                handleEvent(JSON.parse(line.slice(6)));
+                        }
+                    }
+                }
+            }
+
+            function handleEvent(ev) {
+                if (ev.type === "log" || ev.type === "info") appendLine(ev.msg);
+                if (ev.type === "done") {
+                    appendLine("-- done --");
+                    setStatus("done", "done");
+                }
+                if (ev.type === "error") {
+                    appendLine("-- error: " + ev.msg + " --");
+                    setStatus("error", "error");
+                }
+                if (ev.type === "info") setStatus("running…", "info");
+            }
+
+            const LOG_MAX_LINES = 2000;
+            let _scrollPending = false;
+            function appendLine(line) {
+                logEl.appendChild(document.createTextNode(line + "\n"));
+                while (logEl.childNodes.length > LOG_MAX_LINES) {
+                    logEl.removeChild(logEl.firstChild);
+                }
+                if (!_scrollPending) {
+                    _scrollPending = true;
+                    requestAnimationFrame(() => {
+                        logEl.scrollTop = logEl.scrollHeight;
+                        _scrollPending = false;
+                    });
+                }
+            }
+
+            function setStatus(text, kind) {
+                statusEl.textContent = text;
+                statusEl.className = "status-" + kind;
+                dotEl.className = "dot " + kind;
+            }
+
+            const ssEl = document.getElementById("server-status");
+            const ssLabel = ssEl.querySelector(".ss-label");
+            async function pingServer() {
+                try {
+                    const ctrl = new AbortController();
+                    const t = setTimeout(() => ctrl.abort(), 800);
+                    const r = await fetch("/api/ping", {
+                        cache: "no-store",
+                        signal: ctrl.signal,
+                    });
+                    clearTimeout(t);
+                    if (!r.ok) throw 0;
+                    setServerStatus(true);
+                } catch {
+                    setServerStatus(false);
+                }
+            }
+            function setServerStatus(up) {
+                ssEl.classList.toggle("up", up);
+                ssEl.classList.toggle("down", !up);
+                ssLabel.textContent = up ? "online" : "offline";
+            }
+            pingServer();
+            setInterval(pingServer, 1000);
+        </script>
+    </body>
+</html>

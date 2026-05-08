@@ -17,24 +17,29 @@ from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 app = FastAPI()
 
 DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
+INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
 
 
 class DownloadRequest(BaseModel):
     url: str
     output_dir: Optional[str] = None
-    yt_fallback: bool = False         # try YouTube via yt-dlp when SC returns DRM-only
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    return INDEX_HTML
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(INDEX_PATH)
+
+
+@app.get("/api/ping")
+async def ping() -> dict:
+    return {"ok": True}
 
 
 @app.post("/api/download")
@@ -131,7 +136,7 @@ async def stream_direct_api(
             status = {"ok": False}
             async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
                 yield ev
-            if not status["ok"] and req.yt_fallback:
+            if not status["ok"]:
                 async for ev in _youtube_fallback(user, title, output_dir, label, browser):
                     yield ev
         yield sse({"type": "done", "msg": "complete"})
@@ -160,12 +165,12 @@ async def _download_track(
                  if (tc.get("format") or {}).get("protocol") in ("progressive", "hls")]
     if not plaintext:
         protos = sorted({(tc.get("format") or {}).get("protocol", "?") for tc in transcodings})
-        yield sse({"type": "error",
+        yield sse({"type": "info",
                    "msg": (f"{label} DRM-locked. SoundCloud only offers encrypted variants "
                            f"for this track ({', '.join(protos)}); they require a Widevine/"
                            "PlayReady CDM to decrypt. GO+ doesn't change this — labels mark "
                            "their catalog DRM-only regardless of subscription tier. "
-                           "Enable 'Fall back to YouTube' to grab the same title via yt-dlp.")})
+                           "Falling back to YouTube via yt-dlp.")})
         return
 
     # Prefer progressive (single GET, no muxing); fall back to HLS via ffmpeg.
@@ -400,249 +405,6 @@ def sse(payload: dict) -> str:
 def strip_url(url: str) -> str:
     parts = urlsplit(url)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
-
-
-INDEX_HTML = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SoundCloud Archiver</title>
-<style>
-  :root {
-    color-scheme: dark;
-    --bg:#16181d; --panel:#1b1f26; --panel-2:#1f242c;
-    --text:#e6e8eb; --muted:#aab1bd; --border:#2c333d;
-    --accent:#4f8cff; --good:#6ee7b7; --bad:#fca5a5; --info:#93c5fd;
-  }
-  * { box-sizing: border-box; }
-  body {
-    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-    background: var(--bg); color: var(--text); margin: 0;
-    padding: 1.5rem 1rem; line-height: 1.5;
-  }
-  .wrap { max-width: 1200px; margin-inline: auto; }
-  header { margin-bottom: 1.25rem; }
-  h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.01em; }
-  .tag { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
-  a { color: var(--accent); }
-  code {
-    background: var(--panel-2); padding: 0.05em 0.4em; border-radius: 4px;
-    font-size: 0.85em;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  }
-  .muted { color: var(--muted); font-size: 0.85em; }
-
-  .grid { display: grid; gap: 1.25rem; }
-  .col { display: grid; gap: 1.25rem; align-content: start; }
-
-  .panel {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 1.1rem 1.3rem;
-  }
-
-  .howto h2 {
-    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--muted); margin: 0 0 0.6rem; font-weight: 600;
-  }
-  .howto ol { margin: 0; padding-left: 1.2rem; }
-  .howto ol li { margin: 0.3rem 0; font-size: 0.92rem; }
-  .howto .note { color: var(--muted); font-size: 0.83rem; margin: 0.7rem 0 0; }
-
-  form { display: grid; gap: 0.85rem; }
-  label { display: grid; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
-  label.inline {
-    display: flex; align-items: center; gap: 0.55rem; cursor: pointer;
-  }
-  label.inline input { width: auto; }
-  input[type=text], input[type=url] {
-    background: var(--panel-2); color: inherit;
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.55rem 0.75rem; font: inherit; width: 100%;
-  }
-  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  button {
-    background: var(--accent); color: white; border: 0; border-radius: 6px;
-    padding: 0.7rem 1.2rem; font: inherit; font-weight: 600; cursor: pointer;
-    justify-self: start; transition: filter 120ms;
-  }
-  button:hover:not(:disabled) { filter: brightness(1.1); }
-  button:disabled { background: #2c333d; cursor: not-allowed; }
-
-  .status-row {
-    display: flex; align-items: center; gap: 0.6rem;
-    margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--muted);
-  }
-  .dot {
-    display: inline-block; width: 8px; height: 8px;
-    border-radius: 50%; background: var(--muted);
-  }
-  .dot.info { background: var(--info); animation: pulse 1.4s ease-in-out infinite; }
-  .dot.done { background: var(--good); }
-  .dot.error { background: var(--bad); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-  pre#log {
-    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
-    padding: 1rem; min-height: 260px; max-height: 60vh; overflow: auto;
-    white-space: pre-wrap;
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 0.8rem; line-height: 1.5; margin: 0;
-  }
-
-  .status-done { color: var(--good); }
-  .status-error { color: var(--bad); }
-  .status-info { color: var(--info); }
-
-  @media (min-width: 900px) {
-    body { padding: 2.5rem 1.5rem; }
-    .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; }
-    .col-out { position: sticky; top: 1.5rem; }
-    pre#log { max-height: calc(100vh - 9rem); min-height: 360px; }
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>SoundCloud Archiver</h1>
-    <div class="tag">Archive your own SoundCloud uploads as MP3, locally.</div>
-  </header>
-
-  <div class="grid">
-    <div class="col col-in">
-      <section class="panel howto">
-        <h2>How to use</h2>
-        <ol>
-          <li>Log into <a href="https://soundcloud.com">soundcloud.com</a> in the same browser you're using right now.</li>
-          <li>Paste a track or playlist URL below.</li>
-          <li>Hit <strong>Download</strong>. Files save as <code>[Artist] Title.mp3</code> in <code>./downloads</code>.</li>
-        </ol>
-        <p class="note">
-          The tool reads your <code>oauth_token</code> cookie from the browser
-          making this request. It works for any track you can play in your browser
-          <em>that isn't DRM-locked</em> (most major-label catalog is). For
-          DRM-locked tracks, enable the YouTube fallback to grab the same song via
-          <code>yt-dlp</code> instead.
-        </p>
-      </section>
-
-      <form id="f" class="panel">
-        <label>SoundCloud URL
-          <input id="url" type="url" required
-                 placeholder="https://soundcloud.com/you/your-track">
-        </label>
-        <label>Output directory <span class="muted">(optional)</span>
-          <input id="output_dir" type="text" placeholder="leave blank for ./downloads">
-        </label>
-        <label class="inline">
-          <input id="yt_fallback" type="checkbox">
-          <span>If DRM-locked, fall back to YouTube <span class="muted">(filename prefixed <code>[YouTube]</code>)</span></span>
-        </label>
-        <button id="go" type="submit">Download</button>
-      </form>
-    </div>
-
-    <div class="col col-out">
-      <div class="status-row">
-        <span class="dot" id="dot"></span>
-        <span id="status">idle</span>
-      </div>
-      <pre id="log"></pre>
-    </div>
-  </div>
-</div>
-
-<script>
-const form = document.getElementById('f');
-const logEl = document.getElementById('log');
-const statusEl = document.getElementById('status');
-const dotEl = document.getElementById('dot');
-const goBtn = document.getElementById('go');
-
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  logEl.replaceChildren();
-  setStatus('starting...', 'info');
-  goBtn.disabled = true;
-
-  const body = {
-    url: document.getElementById('url').value,
-    output_dir: document.getElementById('output_dir').value || null,
-    yt_fallback: document.getElementById('yt_fallback').checked,
-  };
-
-  try {
-    const resp = await fetch('/api/download', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      setStatus('http ' + resp.status, 'error');
-      logEl.textContent = await resp.text();
-      goBtn.disabled = false;
-      return;
-    }
-    await readStream(resp.body.getReader());
-  } catch (err) {
-    setStatus('network error', 'error');
-    appendLine(String(err));
-  } finally {
-    goBtn.disabled = false;
-  }
-});
-
-async function readStream(reader) {
-  const decoder = new TextDecoder();
-  let buf = '';
-  while (true) {
-    const {value, done} = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, {stream: true});
-    let idx;
-    while ((idx = buf.indexOf('\\n\\n')) !== -1) {
-      const chunk = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      for (const line of chunk.split('\\n')) {
-        if (line.startsWith('data: ')) handleEvent(JSON.parse(line.slice(6)));
-      }
-    }
-  }
-}
-
-function handleEvent(ev) {
-  if (ev.type === 'log' || ev.type === 'info') appendLine(ev.msg);
-  if (ev.type === 'done') { appendLine('-- done --'); setStatus('done', 'done'); }
-  if (ev.type === 'error') { appendLine('-- error: ' + ev.msg + ' --'); setStatus('error', 'error'); }
-  if (ev.type === 'info') setStatus('running...', 'info');
-}
-
-const LOG_MAX_LINES = 2000;
-let _scrollPending = false;
-function appendLine(line) {
-  logEl.appendChild(document.createTextNode(line + '\\n'));
-  while (logEl.childNodes.length > LOG_MAX_LINES) {
-    logEl.removeChild(logEl.firstChild);
-  }
-  if (!_scrollPending) {
-    _scrollPending = true;
-    requestAnimationFrame(() => {
-      logEl.scrollTop = logEl.scrollHeight;
-      _scrollPending = false;
-    });
-  }
-}
-
-function setStatus(text, kind) {
-  statusEl.textContent = text;
-  statusEl.className = 'status-' + kind;
-  dotEl.className = 'dot ' + kind;
-}
-</script>
-</body>
-</html>
-"""
 
 
 if __name__ == "__main__":
