@@ -5,6 +5,7 @@
 #   "uvicorn>=0.27",
 #   "yt-dlp>=2024.10",
 #   "httpx>=0.27",
+#   "mutagen>=1.47",
 # ]
 # ///
 import asyncio
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -28,7 +29,6 @@ SC_API = "https://api-v2.soundcloud.com"
 class DownloadRequest(BaseModel):
     url: str
     output_dir: Optional[str] = None
-    browser: str = "firefox"          # browser to read cookies from, e.g. "firefox" or "firefox:profile-name"
     yt_fallback: bool = False         # try YouTube via yt-dlp when SC returns DRM-only
 
 
@@ -38,7 +38,7 @@ async def index() -> str:
 
 
 @app.post("/api/download")
-async def start_download(req: DownloadRequest):
+async def start_download(req: DownloadRequest, request: Request):
     output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_DOWNLOAD_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -46,14 +46,16 @@ async def start_download(req: DownloadRequest):
     url_changed = cleaned != req.url
     req = req.model_copy(update={"url": cleaned})
 
+    browser = browser_from_user_agent(request.headers.get("user-agent", ""))
+
     return StreamingResponse(
-        stream_direct_api(req, output_dir, url_changed),
+        stream_direct_api(req, output_dir, url_changed, browser),
         media_type="text/event-stream",
     )
 
 
 async def stream_direct_api(
-    req: DownloadRequest, output_dir: Path, url_changed: bool
+    req: DownloadRequest, output_dir: Path, url_changed: bool, browser: str,
 ) -> AsyncGenerator[str, None]:
     """Direct SoundCloud API backend: read OAuth token from browser cookies,
     resolve the URL, iterate transcodings until one delivers a working stream URL."""
@@ -63,18 +65,17 @@ async def stream_direct_api(
         yield sse({"type": "info", "msg": f"stripped query params -> {req.url}"})
     yield sse({"type": "info", "msg": f"saving to: {output_dir}"})
 
-    browser_name = req.browser or "firefox"
     try:
-        token = await asyncio.to_thread(read_browser_oauth_token, browser_name)
+        token = await asyncio.to_thread(read_browser_oauth_token, browser)
     except Exception as e:
-        yield sse({"type": "error", "msg": f"could not read {browser_name} cookies: {e}"})
+        yield sse({"type": "error", "msg": f"could not read {browser} cookies: {e}"})
         return
     if not token:
         yield sse({"type": "error",
-                   "msg": f"no oauth_token cookie found for soundcloud.com in {browser_name}. "
+                   "msg": f"no oauth_token cookie found for soundcloud.com in {browser}. "
                           "Log in to soundcloud.com in that browser first."})
         return
-    yield sse({"type": "info", "msg": f"got oauth_token from {browser_name} (...{token[-6:]})"})
+    yield sse({"type": "info", "msg": f"got oauth_token from {browser} (...{token[-6:]})"})
 
     headers = {
         "Authorization": f"OAuth {token}",
@@ -131,7 +132,7 @@ async def stream_direct_api(
             async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
                 yield ev
             if not status["ok"] and req.yt_fallback:
-                async for ev in _youtube_fallback(user, title, output_dir, label, req.browser):
+                async for ev in _youtube_fallback(user, title, output_dir, label, browser):
                     yield ev
         yield sse({"type": "done", "msg": "complete"})
 
@@ -209,6 +210,11 @@ async def _download_track(
                             f.write(chunk)
                 yield sse({"type": "info",
                            "msg": f"{label}   saved {out_path.stat().st_size:,} bytes"})
+                try:
+                    await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
+                    yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
+                except Exception as e:
+                    yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
                 status["ok"] = True
                 return
             except Exception as e:
@@ -244,6 +250,11 @@ async def _download_track(
             if rc == 0:
                 yield sse({"type": "info",
                            "msg": f"{label}   saved {out_path.stat().st_size:,} bytes"})
+                try:
+                    await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
+                    yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
+                except Exception as e:
+                    yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
                 status["ok"] = True
                 return
             else:
@@ -259,6 +270,18 @@ async def _download_track(
 
 def _make_output_path(output_dir: Path, user: str, title: str, ext: str) -> Path:
     return output_dir / f"[{sanitize_filename(user)}] {sanitize_filename(title)}.{ext}"
+
+
+def _write_mp3_tags(path: Path, artist: str, title: str) -> None:
+    from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1
+
+    try:
+        tags = ID3(path)
+    except ID3NoHeaderError:
+        tags = ID3()
+    tags["TPE1"] = TPE1(encoding=3, text=artist)
+    tags["TIT2"] = TIT2(encoding=3, text=title)
+    tags.save(path, v2_version=3)
 
 
 async def _youtube_fallback(
@@ -278,6 +301,7 @@ async def _youtube_fallback(
         "yt-dlp",
         f"ytsearch1:{query}",
         "-x", "--audio-format", "mp3",
+        "--embed-metadata",
         "--no-playlist",
         "--newline",
         "--cookies-from-browser", browser,
@@ -299,6 +323,29 @@ async def _youtube_fallback(
         yield sse({"type": "info", "msg": f"{label} YT fallback: saved"})
     else:
         yield sse({"type": "error", "msg": f"{label} YT fallback: yt-dlp exit {rc}"})
+
+
+def browser_from_user_agent(ua: str) -> str:
+    """Map a User-Agent string to a yt-dlp `--cookies-from-browser` name.
+
+    Order matters: Chrome-based browsers (Edge, Opera, Vivaldi) include
+    "Chrome/" in their UA, and Chrome itself includes "Safari/", so we check
+    the more specific tokens first. Brave and Arc are intentionally
+    indistinguishable from Chrome via UA — they fall through to "chrome".
+    """
+    if "Edg/" in ua:
+        return "edge"
+    if "OPR/" in ua or "Opera/" in ua:
+        return "opera"
+    if "Vivaldi/" in ua:
+        return "vivaldi"
+    if "Firefox/" in ua:
+        return "firefox"
+    if "Chrome/" in ua or "Chromium/" in ua:
+        return "chrome"
+    if "Safari/" in ua:
+        return "safari"
+    return "safari"
 
 
 def read_browser_oauth_token(browser_spec: str) -> Optional[str]:
@@ -359,59 +406,100 @@ INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SoundCloud Archiver</title>
 <style>
-  :root { color-scheme: dark; --bg:#16181d; --panel:#1b1f26; --panel-2:#1f242c;
-          --text:#e6e8eb; --muted:#aab1bd; --border:#2c333d; --accent:#4f8cff;
-          --good:#6ee7b7; --bad:#fca5a5; --info:#93c5fd; }
+  :root {
+    color-scheme: dark;
+    --bg:#16181d; --panel:#1b1f26; --panel-2:#1f242c;
+    --text:#e6e8eb; --muted:#aab1bd; --border:#2c333d;
+    --accent:#4f8cff; --good:#6ee7b7; --bad:#fca5a5; --info:#93c5fd;
+  }
   * { box-sizing: border-box; }
-  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-         background: var(--bg); color: var(--text); margin: 0;
-         padding: 2.5rem 1.5rem; }
-  .wrap { max-width: 720px; margin-inline: auto; }
-  header { margin-bottom: 1.5rem; }
-  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
-  .tag { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
-  .howto { background: var(--panel); border: 1px solid var(--border);
-           border-radius: 10px; padding: 1.1rem 1.3rem; margin-bottom: 1.5rem; }
-  .howto h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em;
-              color: var(--muted); margin: 0 0 0.6rem; font-weight: 600; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text); margin: 0;
+    padding: 1.5rem 1rem; line-height: 1.5;
+  }
+  .wrap { max-width: 1200px; margin-inline: auto; }
+  header { margin-bottom: 1.25rem; }
+  h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.01em; }
+  .tag { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+  a { color: var(--accent); }
+  code {
+    background: var(--panel-2); padding: 0.05em 0.4em; border-radius: 4px;
+    font-size: 0.85em;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .muted { color: var(--muted); font-size: 0.85em; }
+
+  .grid { display: grid; gap: 1.25rem; }
+  .col { display: grid; gap: 1.25rem; align-content: start; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.1rem 1.3rem;
+  }
+
+  .howto h2 {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 0.6rem; font-weight: 600;
+  }
   .howto ol { margin: 0; padding-left: 1.2rem; }
-  .howto ol li { margin: 0.3rem 0; font-size: 0.92rem; line-height: 1.45; }
-  .howto .note { color: var(--muted); font-size: 0.83rem; margin-top: 0.7rem;
-                 line-height: 1.5; }
-  .howto code { background: var(--panel-2); padding: 0.05em 0.4em; border-radius: 4px;
-                font-size: 0.85em; }
-  form { display: grid; gap: 0.85rem; background: var(--panel);
-         border: 1px solid var(--border); border-radius: 10px; padding: 1.3rem; }
+  .howto ol li { margin: 0.3rem 0; font-size: 0.92rem; }
+  .howto .note { color: var(--muted); font-size: 0.83rem; margin: 0.7rem 0 0; }
+
+  form { display: grid; gap: 0.85rem; }
   label { display: grid; gap: 0.3rem; font-size: 0.85rem; color: var(--muted); }
-  label.inline { display: flex; flex-direction: row; align-items: center;
-                 gap: 0.55rem; cursor: pointer; }
+  label.inline {
+    display: flex; align-items: center; gap: 0.55rem; cursor: pointer;
+  }
   label.inline input { width: auto; }
-  input[type=text], input[type=url] { background: var(--panel-2); color: inherit;
-          border: 1px solid var(--border); border-radius: 6px;
-          padding: 0.55rem 0.75rem; font: inherit; }
+  input[type=text], input[type=url] {
+    background: var(--panel-2); color: inherit;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.55rem 0.75rem; font: inherit; width: 100%;
+  }
   input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  button { background: var(--accent); color: white; border: 0; border-radius: 6px;
-           padding: 0.7rem 1.2rem; font: inherit; font-weight: 600; cursor: pointer;
-           justify-self: start; transition: filter 120ms; }
+  button {
+    background: var(--accent); color: white; border: 0; border-radius: 6px;
+    padding: 0.7rem 1.2rem; font: inherit; font-weight: 600; cursor: pointer;
+    justify-self: start; transition: filter 120ms;
+  }
   button:hover:not(:disabled) { filter: brightness(1.1); }
   button:disabled { background: #2c333d; cursor: not-allowed; }
-  .status-row { display: flex; align-items: center; gap: 0.6rem; margin: 1rem 0 0.4rem;
-                font-size: 0.85rem; color: var(--muted); }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-         background: var(--muted); }
+
+  .status-row {
+    display: flex; align-items: center; gap: 0.6rem;
+    margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--muted);
+  }
+  .dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--muted);
+  }
   .dot.info { background: var(--info); animation: pulse 1.4s ease-in-out infinite; }
   .dot.done { background: var(--good); }
   .dot.error { background: var(--bad); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-  pre#log { background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
-            padding: 1rem; min-height: 200px; max-height: 60vh; overflow: auto;
-            white-space: pre-wrap; font-family: ui-monospace, "SF Mono", Menlo, monospace;
-            font-size: 0.8rem; line-height: 1.5; margin: 0.5rem 0 0; }
+
+  pre#log {
+    background: #0f1115; border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; min-height: 260px; max-height: 60vh; overflow: auto;
+    white-space: pre-wrap;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.8rem; line-height: 1.5; margin: 0;
+  }
+
   .status-done { color: var(--good); }
   .status-error { color: var(--bad); }
   .status-info { color: var(--info); }
+
+  @media (min-width: 900px) {
+    body { padding: 2.5rem 1.5rem; }
+    .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); align-items: start; }
+    .col-out { position: sticky; top: 1.5rem; }
+    pre#log { max-height: calc(100vh - 9rem); min-height: 360px; }
+  }
 </style>
 </head>
 <body>
@@ -421,49 +509,48 @@ INDEX_HTML = """<!doctype html>
     <div class="tag">Archive your own SoundCloud uploads as MP3, locally.</div>
   </header>
 
-  <section class="howto">
-    <h2>How to use</h2>
-    <ol>
-      <li>Log into <a href="https://soundcloud.com" style="color:var(--accent);">soundcloud.com</a> in your browser (Firefox by default).</li>
-      <li>Paste a track or playlist URL below.</li>
-      <li>Hit <strong>Download</strong>. Files save as <code>[Artist] Title.mp3</code> in <code>./downloads</code>.</li>
-    </ol>
-    <p class="note">
-      The tool reads your <code>oauth_token</code> cookie from the named browser to
-      authenticate. It works for any track you can play in your browser <em>that isn't
-      DRM-locked</em> (most major-label catalog is). For DRM-locked tracks, enable the
-      YouTube fallback to grab the same song via <code>yt-dlp</code> instead.
-    </p>
-  </section>
+  <div class="grid">
+    <div class="col col-in">
+      <section class="panel howto">
+        <h2>How to use</h2>
+        <ol>
+          <li>Log into <a href="https://soundcloud.com">soundcloud.com</a> in the same browser you're using right now.</li>
+          <li>Paste a track or playlist URL below.</li>
+          <li>Hit <strong>Download</strong>. Files save as <code>[Artist] Title.mp3</code> in <code>./downloads</code>.</li>
+        </ol>
+        <p class="note">
+          The tool reads your <code>oauth_token</code> cookie from the browser
+          making this request. It works for any track you can play in your browser
+          <em>that isn't DRM-locked</em> (most major-label catalog is). For
+          DRM-locked tracks, enable the YouTube fallback to grab the same song via
+          <code>yt-dlp</code> instead.
+        </p>
+      </section>
 
-  <form id="f">
-    <label>SoundCloud URL
-      <input id="url" type="url" required
-             placeholder="https://soundcloud.com/you/your-track">
-    </label>
-    <label>Browser to read cookies from
-      <input id="browser" type="text" value="firefox"
-             placeholder="firefox | chrome | brave | firefox:profile-name">
-    </label>
-    <label>Output directory <span style="opacity:0.6;">(optional)</span>
-      <input id="output_dir" type="text" placeholder="leave blank for ./downloads">
-    </label>
-    <label class="inline">
-      <input id="yt_fallback" type="checkbox">
-      <span>If the track is DRM-locked, fall back to YouTube
-        <span style="color:var(--muted); font-size: 0.8em;">
-          (filename will be prefixed <code>[YouTube]</code>)
-        </span>
-      </span>
-    </label>
-    <button id="go" type="submit">Download</button>
-  </form>
+      <form id="f" class="panel">
+        <label>SoundCloud URL
+          <input id="url" type="url" required
+                 placeholder="https://soundcloud.com/you/your-track">
+        </label>
+        <label>Output directory <span class="muted">(optional)</span>
+          <input id="output_dir" type="text" placeholder="leave blank for ./downloads">
+        </label>
+        <label class="inline">
+          <input id="yt_fallback" type="checkbox">
+          <span>If DRM-locked, fall back to YouTube <span class="muted">(filename prefixed <code>[YouTube]</code>)</span></span>
+        </label>
+        <button id="go" type="submit">Download</button>
+      </form>
+    </div>
 
-  <div class="status-row">
-    <span class="dot" id="dot"></span>
-    <span id="status">idle</span>
+    <div class="col col-out">
+      <div class="status-row">
+        <span class="dot" id="dot"></span>
+        <span id="status">idle</span>
+      </div>
+      <pre id="log"></pre>
+    </div>
   </div>
-  <pre id="log"></pre>
 </div>
 
 <script>
@@ -482,7 +569,6 @@ form.addEventListener('submit', async (e) => {
   const body = {
     url: document.getElementById('url').value,
     output_dir: document.getElementById('output_dir').value || null,
-    browser: document.getElementById('browser').value || 'firefox',
     yt_fallback: document.getElementById('yt_fallback').checked,
   };
 
