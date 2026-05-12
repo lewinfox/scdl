@@ -12,11 +12,12 @@ import asyncio
 import json
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -25,6 +26,11 @@ app = FastAPI()
 DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
+
+# Maps short tokens to absolute paths of files we've just saved. The browser
+# fetches /api/file/<token> to download them. Tokens keep this endpoint from
+# becoming an arbitrary-path read sink.
+_file_tokens: dict[str, Path] = {}
 
 
 class DownloadRequest(BaseModel):
@@ -40,6 +46,20 @@ async def index() -> FileResponse:
 @app.get("/api/ping")
 async def ping() -> dict:
     return {"ok": True}
+
+
+@app.get("/api/file/{token}")
+async def get_file(token: str) -> FileResponse:
+    path = _file_tokens.get(token)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+def _saved_event(path: Path) -> str:
+    token = uuid.uuid4().hex
+    _file_tokens[token] = path
+    return sse({"type": "saved", "token": token, "filename": path.name})
 
 
 @app.post("/api/download")
@@ -220,6 +240,7 @@ async def _download_track(
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
+                yield _saved_event(out_path)
                 status["ok"] = True
                 return
             except Exception as e:
@@ -260,6 +281,7 @@ async def _download_track(
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
+                yield _saved_event(out_path)
                 status["ok"] = True
                 return
             else:
@@ -326,6 +348,16 @@ async def _youtube_fallback(
     rc = await proc.wait()
     if rc == 0:
         yield sse({"type": "info", "msg": f"{label} YT fallback: saved"})
+        # The template ends in .%(ext)s and -x converts to mp3, so the post-
+        # extraction filename is deterministic. If yt-dlp's filename sanitizer
+        # diverges from ours and the path doesn't match, skip the saved event
+        # rather than guessing.
+        expected_mp3 = output_dir / f"[YouTube] [{sanitize_filename(user)}] {sanitize_filename(title)}.mp3"
+        if expected_mp3.exists():
+            yield _saved_event(expected_mp3)
+        else:
+            yield sse({"type": "info",
+                       "msg": f"{label} YT fallback: couldn't locate output for download link"})
     else:
         yield sse({"type": "error", "msg": f"{label} YT fallback: yt-dlp exit {rc}"})
 

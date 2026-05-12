@@ -522,6 +522,88 @@
                 font-weight: 700;
                 text-shadow: 0 0 8px var(--neon-3);
             }
+
+            .files {
+                display: grid;
+                gap: 0.55rem;
+                margin-bottom: 0.8rem;
+            }
+            .files[hidden] {
+                display: none;
+            }
+            .file-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.6rem;
+                padding: 0.7rem 1rem;
+                border: 2px solid var(--good);
+                border-radius: 6px;
+                color: var(--good);
+                background: linear-gradient(
+                    135deg,
+                    rgba(109, 255, 182, 0.12),
+                    rgba(0, 240, 255, 0.08)
+                );
+                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                font-size: 0.82rem;
+                text-decoration: none;
+                text-shadow:
+                    0 0 8px var(--good),
+                    0 0 16px rgba(109, 255, 182, 0.55);
+                box-shadow:
+                    0 0 16px var(--good),
+                    0 0 32px rgba(109, 255, 182, 0.45),
+                    inset 0 0 18px rgba(109, 255, 182, 0.18);
+                animation:
+                    file-light-up 1.1s ease-out,
+                    file-glow 2.6s ease-in-out 1.1s infinite;
+                transition: transform 120ms;
+                word-break: break-all;
+            }
+            .file-btn::before {
+                content: "⬇";
+                font-size: 1.05rem;
+                flex: 0 0 auto;
+            }
+            .file-btn:hover {
+                transform: translateY(-1px) scale(1.01);
+                border-color: var(--neon-4);
+                color: var(--neon-4);
+                text-shadow:
+                    0 0 8px var(--neon-4),
+                    0 0 18px rgba(249, 248, 113, 0.6);
+            }
+            @keyframes file-light-up {
+                0% {
+                    opacity: 0;
+                    transform: translateY(6px);
+                    filter: brightness(0.3) saturate(0.4);
+                    box-shadow: none;
+                }
+                40% {
+                    filter: brightness(1.8) saturate(1.4);
+                }
+                100% {
+                    opacity: 1;
+                    transform: translateY(0);
+                    filter: brightness(1) saturate(1);
+                }
+            }
+            @keyframes file-glow {
+                0%,
+                100% {
+                    box-shadow:
+                        0 0 16px var(--good),
+                        0 0 32px rgba(109, 255, 182, 0.45),
+                        inset 0 0 18px rgba(109, 255, 182, 0.18);
+                }
+                50% {
+                    box-shadow:
+                        0 0 22px var(--good),
+                        0 0 48px rgba(109, 255, 182, 0.65),
+                        inset 0 0 24px rgba(109, 255, 182, 0.28);
+                }
+            }
             .dot {
                 display: inline-block;
                 width: 11px;
@@ -785,6 +867,7 @@
                         <span class="dot" id="dot"></span>
                         <span id="status">idle</span>
                     </div>
+                    <div id="files" class="files" hidden></div>
                     <pre id="log"></pre>
                 </div>
             </div>
@@ -796,10 +879,13 @@
             const statusEl = document.getElementById("status");
             const dotEl = document.getElementById("dot");
             const goBtn = document.getElementById("go");
+            const filesEl = document.getElementById("files");
 
             form.addEventListener("submit", async (e) => {
                 e.preventDefault();
                 logEl.replaceChildren();
+                filesEl.replaceChildren();
+                filesEl.hidden = true;
                 setStatus("starting…", "info");
                 goBtn.disabled = true;
 
@@ -860,6 +946,17 @@
                     setStatus("error", "error");
                 }
                 if (ev.type === "info") setStatus("running…", "info");
+                if (ev.type === "saved") addFileButton(ev.token, ev.filename);
+            }
+
+            function addFileButton(token, filename) {
+                const a = document.createElement("a");
+                a.className = "file-btn";
+                a.href = "/api/file/" + encodeURIComponent(token);
+                a.download = filename;
+                a.textContent = filename;
+                filesEl.appendChild(a);
+                filesEl.hidden = false;
             }
 
             const LOG_MAX_LINES = 2000;
