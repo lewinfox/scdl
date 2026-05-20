@@ -10,6 +10,7 @@
 # ///
 import asyncio
 import json
+import os
 import re
 import shutil
 import uuid
@@ -17,9 +18,10 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 app = FastAPI()
 
@@ -27,10 +29,33 @@ DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
 
+# Persistent storage for the SC oauth_token and (optional) YT cookies.txt.
+# Overridable via SCDL_DATA_DIR — in Docker this points at a mounted volume.
+DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "data"))
+SC_TOKEN_PATH = DATA_DIR / "sc_token"
+YT_COOKIES_PATH = DATA_DIR / "yt-cookies.txt"
+
 # Maps short tokens to absolute paths of files we've just saved. The browser
 # fetches /api/file/<token> to download them. Tokens keep this endpoint from
 # becoming an arbitrary-path read sink.
 _file_tokens: dict[str, Path] = {}
+
+
+def _read_sc_token() -> Optional[str]:
+    try:
+        return SC_TOKEN_PATH.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def _write_secret(path: Path, content: str) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    # chmod is best-effort: some bind-mounted volumes silently ignore it.
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 class DownloadRequest(BaseModel):
@@ -53,7 +78,20 @@ async def get_file(token: str) -> FileResponse:
     path = _file_tokens.get(token)
     if path is None or not path.exists():
         raise HTTPException(status_code=404)
-    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+    def cleanup() -> None:
+        _file_tokens.pop(token, None)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/octet-stream",
+        background=BackgroundTask(cleanup),
+    )
 
 
 def _saved_event(path: Path) -> str:
@@ -63,7 +101,7 @@ def _saved_event(path: Path) -> str:
 
 
 @app.post("/api/download")
-async def start_download(req: DownloadRequest, request: Request):
+async def start_download(req: DownloadRequest):
     output_dir = Path(req.output_dir).expanduser() if req.output_dir else DEFAULT_DOWNLOAD_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -71,18 +109,16 @@ async def start_download(req: DownloadRequest, request: Request):
     url_changed = cleaned != req.url
     req = req.model_copy(update={"url": cleaned})
 
-    browser = browser_from_user_agent(request.headers.get("user-agent", ""))
-
     return StreamingResponse(
-        stream_direct_api(req, output_dir, url_changed, browser),
+        stream_direct_api(req, output_dir, url_changed),
         media_type="text/event-stream",
     )
 
 
 async def stream_direct_api(
-    req: DownloadRequest, output_dir: Path, url_changed: bool, browser: str,
+    req: DownloadRequest, output_dir: Path, url_changed: bool,
 ) -> AsyncGenerator[str, None]:
-    """Direct SoundCloud API backend: read OAuth token from browser cookies,
+    """Direct SoundCloud API backend: read OAuth token from the stored config,
     resolve the URL, iterate transcodings until one delivers a working stream URL."""
     import httpx
 
@@ -90,17 +126,12 @@ async def stream_direct_api(
         yield sse({"type": "info", "msg": f"stripped query params -> {req.url}"})
     yield sse({"type": "info", "msg": f"saving to: {output_dir}"})
 
-    try:
-        token = await asyncio.to_thread(read_browser_oauth_token, browser)
-    except Exception as e:
-        yield sse({"type": "error", "msg": f"could not read {browser} cookies: {e}"})
-        return
+    token = _read_sc_token()
     if not token:
         yield sse({"type": "error",
-                   "msg": f"no oauth_token cookie found for soundcloud.com in {browser}. "
-                          "Log in to soundcloud.com in that browser first."})
+                   "msg": "no SoundCloud token configured — set one in the Auth panel above"})
         return
-    yield sse({"type": "info", "msg": f"got oauth_token from {browser} (...{token[-6:]})"})
+    yield sse({"type": "info", "msg": f"using stored oauth_token (...{token[-6:]})"})
 
     headers = {
         "Authorization": f"OAuth {token}",
@@ -157,7 +188,7 @@ async def stream_direct_api(
             async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
                 yield ev
             if not status["ok"]:
-                async for ev in _youtube_fallback(user, title, output_dir, label, browser):
+                async for ev in _youtube_fallback(user, title, output_dir, label):
                     yield ev
         yield sse({"type": "done", "msg": "complete"})
 
@@ -312,7 +343,7 @@ def _write_mp3_tags(path: Path, artist: str, title: str) -> None:
 
 
 async def _youtube_fallback(
-    user: str, title: str, output_dir: Path, label: str, browser: str,
+    user: str, title: str, output_dir: Path, label: str,
 ) -> AsyncGenerator[str, None]:
     """When SC returns nothing playable, try yt-dlp ytsearch1 against YouTube.
     Output filename is prefixed [YouTube] so the source is unambiguous."""
@@ -331,10 +362,14 @@ async def _youtube_fallback(
         "--embed-metadata",
         "--no-playlist",
         "--newline",
-        "--cookies-from-browser", browser,
         "--js-runtimes", "bun",
         "-o", str(out_template),
     ]
+    if YT_COOKIES_PATH.exists():
+        cmd += ["--cookies", str(YT_COOKIES_PATH)]
+    else:
+        yield sse({"type": "info",
+                   "msg": f"{label} YT fallback: no cookies.txt configured — may hit YouTube's bot wall"})
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -362,49 +397,85 @@ async def _youtube_fallback(
         yield sse({"type": "error", "msg": f"{label} YT fallback: yt-dlp exit {rc}"})
 
 
-def browser_from_user_agent(ua: str) -> str:
-    """Map a User-Agent string to a yt-dlp `--cookies-from-browser` name.
-
-    Order matters: Chrome-based browsers (Edge, Opera, Vivaldi) include
-    "Chrome/" in their UA, and Chrome itself includes "Safari/", so we check
-    the more specific tokens first. Brave and Arc are intentionally
-    indistinguishable from Chrome via UA — they fall through to "chrome".
-    """
-    if "Edg/" in ua:
-        return "edge"
-    if "OPR/" in ua or "Opera/" in ua:
-        return "opera"
-    if "Vivaldi/" in ua:
-        return "vivaldi"
-    if "Firefox/" in ua:
-        return "firefox"
-    if "Chrome/" in ua or "Chromium/" in ua:
-        return "chrome"
-    if "Safari/" in ua:
-        return "safari"
-    return "safari"
+class SCAuthRequest(BaseModel):
+    token: str
 
 
-def read_browser_oauth_token(browser_spec: str) -> Optional[str]:
-    """Read the soundcloud.com `oauth_token` cookie from the named browser.
+class YTAuthRequest(BaseModel):
+    cookies: str
 
-    `browser_spec` is yt-dlp's `--cookies-from-browser` syntax: 'firefox',
-    'chrome:Profile 1', etc. Returns the token value or None if not present.
-    """
-    from yt_dlp.cookies import extract_cookies_from_browser
 
-    class _Quiet:
-        def debug(self, *a, **k): pass
-        def info(self, *a, **k): pass
-        def warning(self, *a, **k): pass
-        def error(self, *a, **k): pass
+@app.get("/api/auth")
+async def auth_status() -> dict:
+    tok = _read_sc_token()
+    return {
+        "sc_token_set": tok is not None,
+        "sc_token_hint": f"…{tok[-6:]}" if tok else None,
+        "yt_cookies_set": YT_COOKIES_PATH.exists(),
+    }
 
-    name, _, profile = browser_spec.partition(":")
-    jar = extract_cookies_from_browser(name, profile=profile or None, logger=_Quiet())
-    for c in jar:
-        if c.name == "oauth_token" and "soundcloud.com" in (c.domain or ""):
-            return c.value
-    return None
+
+@app.post("/api/auth/sc")
+async def save_sc_token(req: SCAuthRequest) -> dict:
+    """Validate the pasted oauth_token against SoundCloud's /me endpoint
+    before persisting it. The returned username gives the user immediate
+    confidence that they pasted the right cookie."""
+    import httpx
+
+    token = req.token.strip()
+    if not token:
+        raise HTTPException(400, "token is empty")
+
+    headers = {
+        "Authorization": f"OAuth {token}",
+        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
+    }
+    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
+        try:
+            client_id = await fetch_client_id(client)
+        except Exception as e:
+            raise HTTPException(502, f"could not get SoundCloud client_id: {e}")
+        try:
+            r = await client.get(f"{SC_API}/me", params={"client_id": client_id})
+        except Exception as e:
+            raise HTTPException(502, f"SoundCloud /me failed: {e}")
+
+    if r.status_code == 401:
+        raise HTTPException(401, "SoundCloud rejected this token — make sure you copied the value, not the name")
+    if r.status_code != 200:
+        raise HTTPException(502, f"SoundCloud /me returned HTTP {r.status_code}")
+
+    me = r.json() or {}
+    _write_secret(SC_TOKEN_PATH, token)
+    return {"username": me.get("username") or me.get("permalink") or "unknown"}
+
+
+@app.delete("/api/auth/sc")
+async def clear_sc_token() -> dict:
+    SC_TOKEN_PATH.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/auth/yt")
+async def save_yt_cookies(req: YTAuthRequest) -> dict:
+    content = req.cookies.strip()
+    if not content:
+        raise HTTPException(400, "cookies content is empty")
+    if "# Netscape HTTP Cookie File" not in content.splitlines()[0]:
+        # Soft-validate: yt-dlp will reject bad files anyway, but a heads-up
+        # at paste time saves a confused fallback run later.
+        raise HTTPException(400,
+            "doesn't look like a Netscape cookies.txt — first line should be "
+            "'# Netscape HTTP Cookie File'. Use a cookies.txt exporter extension.")
+    _write_secret(YT_COOKIES_PATH, content + "\n")
+    return {"ok": True}
+
+
+@app.delete("/api/auth/yt")
+async def clear_yt_cookies() -> dict:
+    YT_COOKIES_PATH.unlink(missing_ok=True)
+    return {"ok": True}
 
 
 async def fetch_client_id(client) -> str:

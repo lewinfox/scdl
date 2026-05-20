@@ -1,0 +1,20 @@
+services:
+  archiver:
+    build: .
+    # Pi-on-LAN: bind to all interfaces so other machines can reach it.
+    # Tighten this to 127.0.0.1:8765:8765 if you want loopback-only.
+    ports:
+      - "8765:8765"
+    environment:
+      - SCDL_DATA_DIR=/data
+    volumes:
+      # Staging dir for downloads-in-flight. The server deletes each file
+      # once the browser fetches it, so this normally stays empty.
+      - ./downloads:/app/downloads
+      # Persistent auth blob: the SoundCloud oauth_token and (optional)
+      # YouTube cookies.txt live here, set via the Auth panel in the UI.
+      - scdl-data:/data
+    restart: unless-stopped
+
+volumes:
+  scdl-data:
