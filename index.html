@@ -1462,7 +1462,7 @@
                 };
 
                 try {
-                    const resp = await fetch("/api/download", {
+                    const resp = await fetch("api/download", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(body),
@@ -1518,7 +1518,7 @@
             function addFileButton(token, filename) {
                 const a = document.createElement("a");
                 a.className = "file-btn";
-                a.href = "/api/file/" + encodeURIComponent(token);
+                a.href = "api/file/" + encodeURIComponent(token);
                 a.download = filename;
                 a.textContent = filename;
                 // The server deletes the file once it's been served, so a
@@ -1567,7 +1567,7 @@
 
             async function refreshAuth() {
                 try {
-                    const r = await fetch("/api/auth", { cache: "no-store" });
+                    const r = await fetch("api/auth", { cache: "no-store" });
                     if (!r.ok) throw 0;
                     const a = await r.json();
                     const scBadge = a.sc_token_set
@@ -1604,7 +1604,7 @@
                     }
                     setMsg(scMsgEl, "validating with SoundCloud…", "");
                     try {
-                        const r = await fetch("/api/auth/sc", {
+                        const r = await fetch("api/auth/sc", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ token: tok }),
@@ -1638,7 +1638,7 @@
             document
                 .getElementById("clear-sc-token")
                 .addEventListener("click", async () => {
-                    await fetch("/api/auth/sc", { method: "DELETE" });
+                    await fetch("api/auth/sc", { method: "DELETE" });
                     setMsg(scMsgEl, "cleared", "");
                     refreshAuth();
                 });
@@ -1653,7 +1653,7 @@
                     }
                     setMsg(ytMsgEl, "saving…", "");
                     try {
-                        const r = await fetch("/api/auth/yt", {
+                        const r = await fetch("api/auth/yt", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ cookies: content }),
@@ -1678,7 +1678,7 @@
             document
                 .getElementById("clear-yt-cookies")
                 .addEventListener("click", async () => {
-                    await fetch("/api/auth/yt", { method: "DELETE" });
+                    await fetch("api/auth/yt", { method: "DELETE" });
                     setMsg(ytMsgEl, "cleared", "");
                     refreshAuth();
                 });
@@ -1691,7 +1691,7 @@
                 try {
                     const ctrl = new AbortController();
                     const t = setTimeout(() => ctrl.abort(), 800);
-                    const r = await fetch("/api/ping", {
+                    const r = await fetch("api/ping", {
                         cache: "no-store",
                         signal: ctrl.signal,
                     });
