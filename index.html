@@ -1418,15 +1418,6 @@
                                 placeholder="https://soundcloud.com/you/your-track"
                             />
                         </label>
-                        <label
-                            >Output directory
-                            <span class="muted">(optional)</span>
-                            <input
-                                id="output_dir"
-                                type="text"
-                                placeholder="leave blank for ./downloads"
-                            />
-                        </label>
                         <button id="go" type="submit">Download</button>
                     </form>
                     <div class="status-row">
@@ -1457,8 +1448,6 @@
 
                 const body = {
                     url: document.getElementById("url").value,
-                    output_dir:
-                        document.getElementById("output_dir").value || null,
                 };
 
                 try {
@@ -1529,6 +1518,10 @@
                 });
                 filesEl.appendChild(a);
                 filesEl.hidden = false;
+                // Trigger the download right away. The button stays as a
+                // visible receipt (and a fallback if the browser blocks the
+                // programmatic click).
+                a.click();
             }
 
             const LOG_MAX_LINES = 2000;
