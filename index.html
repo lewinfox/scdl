@@ -820,6 +820,10 @@
                 color: var(--good);
                 text-shadow: 0 0 6px var(--good);
             }
+            .dl-state.partial {
+                color: var(--neon-4);
+                text-shadow: 0 0 6px var(--neon-4);
+            }
             .dl-state.error {
                 color: var(--bad);
                 text-shadow: 0 0 6px var(--bad);
@@ -847,6 +851,26 @@
                 border-color: var(--bad);
                 text-shadow: 0 0 6px var(--bad);
                 transform: none;
+            }
+            /* Drawn when the stream ended with errors — pulls the user's
+               eye to the dismiss control once they've processed the panel. */
+            .dl-close.attn-failed {
+                color: var(--bad);
+                border-color: var(--bad);
+                text-shadow: 0 0 6px var(--bad);
+                box-shadow:
+                    0 0 10px rgba(255, 77, 109, 0.55),
+                    inset 0 0 8px rgba(255, 77, 109, 0.18);
+                animation: pulse 1.4s ease-in-out infinite;
+            }
+            .dl-close.attn-partial {
+                color: var(--neon-4);
+                border-color: var(--neon-4);
+                text-shadow: 0 0 6px var(--neon-4);
+                box-shadow:
+                    0 0 10px rgba(249, 248, 113, 0.5),
+                    inset 0 0 8px rgba(249, 248, 113, 0.18);
+                animation: pulse 1.6s ease-in-out infinite;
             }
             .dl-files {
                 display: grid;
@@ -999,6 +1023,14 @@
                     0 0 22px var(--good),
                     0 0 40px var(--good);
                 animation: pulse 1.6s ease-in-out infinite;
+            }
+            .dot.partial {
+                background: var(--neon-4);
+                box-shadow:
+                    0 0 10px var(--neon-4),
+                    0 0 22px var(--neon-4),
+                    0 0 40px rgba(249, 248, 113, 0.6);
+                animation: pulse 1.2s ease-in-out infinite;
             }
             .dot.error {
                 background: var(--bad);
@@ -1508,13 +1540,14 @@
                     this.stateEl = el.querySelector(".dl-state");
                     this.filesEl = el.querySelector(".dl-files");
                     this.logEl = el.querySelector(".dl-log");
+                    this.closeBtn = el.querySelector(".dl-close");
 
                     // Until the server tells us the resolved track/playlist
                     // title, show whatever's identifiable about the URL.
                     this.titleEl.textContent = this.urlLabel(this.url);
                     this.titleEl.title = this.url;
 
-                    el.querySelector(".dl-close").addEventListener("click",
+                    this.closeBtn.addEventListener("click",
                         () => this.element.remove());
 
                     // Newest at the top so the active download stays visible.
@@ -1587,9 +1620,21 @@
                         return;
                     }
                     if (ev.type === "done") {
-                        this.appendLine("-- done --");
-                        this.setState("done", "done");
                         this.streamDone = true;
+                        if (!this.hadError) {
+                            this.appendLine("-- done --");
+                            this.setState("done", "done");
+                        } else if (this.files.length) {
+                            // Some tracks saved, some errored — common for
+                            // playlists with a mix of DRM and clear tracks.
+                            this.appendLine("-- partial (some tracks failed) --");
+                            this.setState("partial", "partial");
+                            this.closeBtn.classList.add("attn-partial");
+                        } else {
+                            this.appendLine("-- failed --");
+                            this.setState("failed", "error");
+                            this.closeBtn.classList.add("attn-failed");
+                        }
                         this.maybeAutoRemove();
                         return;
                     }
