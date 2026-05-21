@@ -158,10 +158,16 @@ async def stream_direct_api(
         kind = root.get("kind")
         if kind == "track":
             tracks = [root]
+            t_user = (root.get("user") or {}).get("username") or "unknown"
+            t_title = root.get("title") or "untitled"
+            yield sse({"type": "title", "title": f"{t_user} — {t_title}"})
         elif kind == "playlist":
             tracks = root.get("tracks", [])
+            p_title = root.get("title", "?")
+            yield sse({"type": "title",
+                       "title": f"Playlist: {p_title} ({len(tracks)} tracks)"})
             yield sse({"type": "info",
-                       "msg": f"playlist '{root.get('title', '?')}': {len(tracks)} tracks"})
+                       "msg": f"playlist '{p_title}': {len(tracks)} tracks"})
         else:
             yield sse({"type": "error",
                        "msg": f"unsupported resource kind {kind!r} (need a track or playlist URL)"})

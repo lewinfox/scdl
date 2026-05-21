@@ -1,0 +1,9 @@
+services:
+  archiver:
+    # Live-mount the source so edits on the host show up in the container.
+    # main.py reloads via uvicorn --reload; index.html is read from disk on
+    # every request, so a browser refresh is enough.
+    volumes:
+      - ./main.py:/app/main.py
+      - ./index.html:/app/index.html
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--reload"]

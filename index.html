@@ -773,26 +773,120 @@
                 background: transparent;
             }
 
-            .status-row {
+            #downloads {
+                display: grid;
+                gap: 1.2rem;
+                margin-top: 1.5rem;
+            }
+            #downloads:empty {
+                display: none;
+            }
+            .dl-panel {
+                padding: 0.95rem 1.1rem;
+            }
+            .dl-head {
                 display: flex;
                 align-items: center;
-                gap: 0.7rem;
-                margin-bottom: 0.6rem;
-                font-size: 0.78rem;
-                color: var(--neon-3);
-                text-transform: uppercase;
-                letter-spacing: 0.22em;
+                gap: 0.6rem;
+                margin-bottom: 0.7rem;
+                flex-wrap: wrap;
+            }
+            .dl-title {
+                flex: 1;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
                 font-weight: 700;
-                text-shadow: 0 0 8px var(--neon-3);
+                font-size: 0.92rem;
+                color: var(--neon);
+                text-shadow:
+                    0 0 6px var(--neon),
+                    0 0 14px rgba(0, 240, 255, 0.4);
+                letter-spacing: 0.02em;
             }
-
-            .files {
+            .dl-state {
+                font-size: 0.7rem;
+                text-transform: uppercase;
+                letter-spacing: 0.18em;
+                font-weight: 700;
+                color: var(--muted);
+            }
+            .dl-state.info {
+                color: var(--info);
+                text-shadow: 0 0 6px var(--info);
+            }
+            .dl-state.done {
+                color: var(--good);
+                text-shadow: 0 0 6px var(--good);
+            }
+            .dl-state.error {
+                color: var(--bad);
+                text-shadow: 0 0 6px var(--bad);
+            }
+            .dl-close {
+                background: transparent;
+                border: 1px solid var(--border);
+                color: var(--muted);
+                border-radius: 4px;
+                width: 1.8em;
+                height: 1.8em;
+                padding: 0;
+                font-size: 0.95rem;
+                line-height: 1;
+                cursor: pointer;
+                margin: 0;
+                animation: none;
+                box-shadow: none;
+                text-shadow: none;
+                letter-spacing: 0;
+                font-weight: 600;
+            }
+            .dl-close:hover:not(:disabled) {
+                color: var(--bad);
+                border-color: var(--bad);
+                text-shadow: 0 0 6px var(--bad);
+                transform: none;
+            }
+            .dl-files {
                 display: grid;
-                gap: 0.55rem;
-                margin-bottom: 0.8rem;
+                gap: 0.5rem;
+                margin-bottom: 0.7rem;
             }
-            .files[hidden] {
+            .dl-files[hidden] {
                 display: none;
+            }
+            .dl-files .file-btn {
+                padding: 0.55rem 0.85rem;
+                font-size: 0.78rem;
+            }
+            .dl-log {
+                background:
+                    repeating-linear-gradient(
+                        to bottom,
+                        rgba(0, 0, 0, 0) 0px,
+                        rgba(0, 0, 0, 0) 2px,
+                        rgba(0, 240, 255, 0.04) 3px,
+                        rgba(0, 0, 0, 0) 4px
+                    ),
+                    #03000a;
+                border: 1px solid var(--neon-3);
+                border-radius: 6px;
+                padding: 0.55rem 0.8rem;
+                /* clamp to ~4 lines tall */
+                height: calc(0.72rem * 1.55 * 4 + 1.1rem);
+                overflow: auto;
+                white-space: pre-wrap;
+                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                font-size: 0.72rem;
+                line-height: 1.55;
+                margin: 0;
+                color: #b9f5ff;
+                text-shadow:
+                    0 0 4px rgba(0, 240, 255, 0.55),
+                    0 0 10px rgba(0, 240, 255, 0.25);
+                box-shadow:
+                    inset 0 0 18px rgba(0, 240, 255, 0.06);
             }
             .file-btn {
                 display: inline-flex;
@@ -994,56 +1088,6 @@
                 }
             }
 
-            pre#log {
-                background:
-                    repeating-linear-gradient(
-                        to bottom,
-                        rgba(0, 0, 0, 0) 0px,
-                        rgba(0, 0, 0, 0) 2px,
-                        rgba(0, 240, 255, 0.04) 3px,
-                        rgba(0, 0, 0, 0) 4px
-                    ),
-                    #03000a;
-                border: 1px solid var(--neon-3);
-                border-radius: 8px;
-                padding: 1.1rem;
-                min-height: 260px;
-                max-height: 60vh;
-                overflow: auto;
-                white-space: pre-wrap;
-                font-family: ui-monospace, "SF Mono", Menlo, monospace;
-                font-size: 0.82rem;
-                line-height: 1.55;
-                margin: 0;
-                color: #b9f5ff;
-                text-shadow:
-                    0 0 4px rgba(0, 240, 255, 0.6),
-                    0 0 10px rgba(0, 240, 255, 0.3);
-                box-shadow:
-                    0 0 18px rgba(176, 38, 255, 0.4),
-                    0 0 36px rgba(255, 43, 214, 0.25),
-                    inset 0 0 32px rgba(0, 240, 255, 0.08);
-            }
-
-            .status-done {
-                color: var(--good);
-                text-shadow:
-                    0 0 8px var(--good),
-                    0 0 18px rgba(109, 255, 182, 0.6);
-            }
-            .status-error {
-                color: var(--bad);
-                text-shadow:
-                    0 0 8px var(--bad),
-                    0 0 18px rgba(255, 77, 109, 0.6);
-            }
-            .status-info {
-                color: var(--info);
-                text-shadow:
-                    0 0 8px var(--info),
-                    0 0 18px rgba(147, 197, 253, 0.6);
-            }
-
             @media (min-width: 900px) {
                 body {
                     padding: 2.5rem 1.5rem;
@@ -1051,14 +1095,6 @@
                 .grid {
                     grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
                     align-items: start;
-                }
-                .col-out {
-                    position: sticky;
-                    top: 1.5rem;
-                }
-                pre#log {
-                    max-height: calc(100vh - 22rem);
-                    min-height: 280px;
                 }
                 h1 {
                     font-size: 2.6rem;
@@ -1420,130 +1456,206 @@
                         </label>
                         <button id="go" type="submit">Download</button>
                     </form>
-                    <div class="status-row">
-                        <span class="dot" id="dot"></span>
-                        <span id="status">idle</span>
-                    </div>
-                    <div id="files" class="files" hidden></div>
-                    <pre id="log"></pre>
+                    <div id="downloads"></div>
                 </div>
             </div>
         </div>
 
         <script>
             const form = document.getElementById("f");
-            const logEl = document.getElementById("log");
-            const statusEl = document.getElementById("status");
-            const dotEl = document.getElementById("dot");
-            const goBtn = document.getElementById("go");
-            const filesEl = document.getElementById("files");
+            const urlEl = document.getElementById("url");
+            const downloadsEl = document.getElementById("downloads");
 
-            form.addEventListener("submit", async (e) => {
+            form.addEventListener("submit", (e) => {
                 e.preventDefault();
-                logEl.replaceChildren();
-                filesEl.replaceChildren();
-                filesEl.hidden = true;
-                setStatus("starting…", "info");
-                goBtn.disabled = true;
-
-                const body = {
-                    url: document.getElementById("url").value,
-                };
-
-                try {
-                    const resp = await fetch("api/download", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(body),
-                    });
-                    if (!resp.ok) {
-                        setStatus("http " + resp.status, "error");
-                        logEl.textContent = await resp.text();
-                        goBtn.disabled = false;
-                        return;
-                    }
-                    await readStream(resp.body.getReader());
-                } catch (err) {
-                    setStatus("network error", "error");
-                    appendLine(String(err));
-                } finally {
-                    goBtn.disabled = false;
-                }
+                const url = urlEl.value.trim();
+                if (!url) return;
+                urlEl.value = "";
+                const panel = new DownloadPanel(url);
+                panel.run();
             });
 
-            async function readStream(reader) {
-                const decoder = new TextDecoder();
-                let buf = "";
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    buf += decoder.decode(value, { stream: true });
-                    let idx;
-                    while ((idx = buf.indexOf("\n\n")) !== -1) {
-                        const chunk = buf.slice(0, idx);
-                        buf = buf.slice(idx + 2);
-                        for (const line of chunk.split("\n")) {
-                            if (line.startsWith("data: "))
-                                handleEvent(JSON.parse(line.slice(6)));
+            // Each form submit creates one of these. They run independently,
+            // so parallel downloads just means parallel panels.
+            class DownloadPanel {
+                static LOG_MAX_LINES = 200;
+                static REMOVE_DELAY_MS = 1200;
+
+                constructor(url) {
+                    this.url = url;
+                    this.files = [];
+                    this.streamDone = false;
+                    this.hadError = false;
+                    this.build();
+                }
+
+                build() {
+                    const el = document.createElement("section");
+                    el.className = "panel dl-panel";
+                    el.innerHTML = `
+                        <div class="dl-head">
+                            <span class="dot info"></span>
+                            <span class="dl-title"></span>
+                            <span class="dl-state info">starting…</span>
+                            <button class="dl-close" type="button" title="Dismiss">×</button>
+                        </div>
+                        <div class="dl-files" hidden></div>
+                        <pre class="dl-log"></pre>
+                    `;
+                    this.element = el;
+                    this.dotEl = el.querySelector(".dot");
+                    this.titleEl = el.querySelector(".dl-title");
+                    this.stateEl = el.querySelector(".dl-state");
+                    this.filesEl = el.querySelector(".dl-files");
+                    this.logEl = el.querySelector(".dl-log");
+
+                    // Until the server tells us the resolved track/playlist
+                    // title, show whatever's identifiable about the URL.
+                    this.titleEl.textContent = this.urlLabel(this.url);
+                    this.titleEl.title = this.url;
+
+                    el.querySelector(".dl-close").addEventListener("click",
+                        () => this.element.remove());
+
+                    // Newest at the top so the active download stays visible.
+                    downloadsEl.prepend(el);
+                }
+
+                urlLabel(url) {
+                    try {
+                        const u = new URL(url);
+                        return (u.pathname.replace(/^\/+/, "") || u.host) + " (resolving…)";
+                    } catch {
+                        return url;
+                    }
+                }
+
+                setTitle(title) {
+                    this.titleEl.textContent = title;
+                    this.titleEl.title = title;
+                }
+
+                setState(text, kind) {
+                    this.stateEl.textContent = text;
+                    this.stateEl.className = "dl-state " + kind;
+                    this.dotEl.className = "dot " + kind;
+                }
+
+                appendLine(line) {
+                    this.logEl.appendChild(document.createTextNode(line + "\n"));
+                    while (this.logEl.childNodes.length > DownloadPanel.LOG_MAX_LINES) {
+                        this.logEl.removeChild(this.logEl.firstChild);
+                    }
+                    // The pre auto-scrolls to bottom as new lines arrive.
+                    this.logEl.scrollTop = this.logEl.scrollHeight;
+                }
+
+                addFile(token, filename) {
+                    const a = document.createElement("a");
+                    a.className = "file-btn";
+                    a.href = "api/file/" + encodeURIComponent(token);
+                    a.download = filename;
+                    a.textContent = filename;
+                    a.addEventListener("click", () => {
+                        // Server deletes the file once served; mark consumed
+                        // so a re-click can't 404, then re-check if the panel
+                        // can self-dismiss.
+                        setTimeout(() => {
+                            a.classList.add("consumed");
+                            this.maybeAutoRemove();
+                        }, 0);
+                    });
+                    this.filesEl.appendChild(a);
+                    this.filesEl.hidden = false;
+                    this.files.push(a);
+                    // Auto-trigger the actual download.
+                    a.click();
+                }
+
+                handleEvent(ev) {
+                    if (ev.type === "title") {
+                        this.setTitle(ev.title);
+                        return;
+                    }
+                    if (ev.type === "log" || ev.type === "info") {
+                        this.appendLine(ev.msg);
+                        this.setState("running…", "info");
+                        return;
+                    }
+                    if (ev.type === "saved") {
+                        this.addFile(ev.token, ev.filename);
+                        return;
+                    }
+                    if (ev.type === "done") {
+                        this.appendLine("-- done --");
+                        this.setState("done", "done");
+                        this.streamDone = true;
+                        this.maybeAutoRemove();
+                        return;
+                    }
+                    if (ev.type === "error") {
+                        this.appendLine("-- error: " + ev.msg + " --");
+                        this.setState("error", "error");
+                        this.hadError = true;
+                        return;
+                    }
+                }
+
+                maybeAutoRemove() {
+                    // Dismiss the panel only when everything succeeded AND the
+                    // user has actually pulled every file. Errors stay on
+                    // screen until the user closes them with the × button.
+                    if (!this.streamDone || this.hadError) return;
+                    if (!this.files.length) return;
+                    if (!this.files.every((a) =>
+                        a.classList.contains("consumed"))) return;
+                    setTimeout(
+                        () => this.element.remove(),
+                        DownloadPanel.REMOVE_DELAY_MS,
+                    );
+                }
+
+                async run() {
+                    try {
+                        const resp = await fetch("api/download", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ url: this.url }),
+                        });
+                        if (!resp.ok) {
+                            this.setState("http " + resp.status, "error");
+                            this.appendLine(await resp.text());
+                            this.hadError = true;
+                            this.streamDone = true;
+                            return;
+                        }
+                        await this.consumeStream(resp.body.getReader());
+                    } catch (err) {
+                        this.setState("network error", "error");
+                        this.appendLine(String(err));
+                        this.hadError = true;
+                        this.streamDone = true;
+                    }
+                }
+
+                async consumeStream(reader) {
+                    const decoder = new TextDecoder();
+                    let buf = "";
+                    while (true) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        buf += decoder.decode(value, { stream: true });
+                        let idx;
+                        while ((idx = buf.indexOf("\n\n")) !== -1) {
+                            const chunk = buf.slice(0, idx);
+                            buf = buf.slice(idx + 2);
+                            for (const line of chunk.split("\n")) {
+                                if (line.startsWith("data: "))
+                                    this.handleEvent(JSON.parse(line.slice(6)));
+                            }
                         }
                     }
                 }
-            }
-
-            function handleEvent(ev) {
-                if (ev.type === "log" || ev.type === "info") appendLine(ev.msg);
-                if (ev.type === "done") {
-                    appendLine("-- done --");
-                    setStatus("done", "done");
-                }
-                if (ev.type === "error") {
-                    appendLine("-- error: " + ev.msg + " --");
-                    setStatus("error", "error");
-                }
-                if (ev.type === "info") setStatus("running…", "info");
-                if (ev.type === "saved") addFileButton(ev.token, ev.filename);
-            }
-
-            function addFileButton(token, filename) {
-                const a = document.createElement("a");
-                a.className = "file-btn";
-                a.href = "api/file/" + encodeURIComponent(token);
-                a.download = filename;
-                a.textContent = filename;
-                // The server deletes the file once it's been served, so a
-                // second click would 404. Mark the button consumed after the
-                // browser has had a tick to start the download.
-                a.addEventListener("click", () => {
-                    setTimeout(() => a.classList.add("consumed"), 0);
-                });
-                filesEl.appendChild(a);
-                filesEl.hidden = false;
-                // Trigger the download right away. The button stays as a
-                // visible receipt (and a fallback if the browser blocks the
-                // programmatic click).
-                a.click();
-            }
-
-            const LOG_MAX_LINES = 2000;
-            let _scrollPending = false;
-            function appendLine(line) {
-                logEl.appendChild(document.createTextNode(line + "\n"));
-                while (logEl.childNodes.length > LOG_MAX_LINES) {
-                    logEl.removeChild(logEl.firstChild);
-                }
-                if (!_scrollPending) {
-                    _scrollPending = true;
-                    requestAnimationFrame(() => {
-                        logEl.scrollTop = logEl.scrollHeight;
-                        _scrollPending = false;
-                    });
-                }
-            }
-
-            function setStatus(text, kind) {
-                statusEl.textContent = text;
-                statusEl.className = "status-" + kind;
-                dotEl.className = "dot " + kind;
             }
 
             const authPanelEl = document.getElementById("auth-panel");
