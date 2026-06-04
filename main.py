@@ -9,17 +9,26 @@
 # ]
 # ///
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets as secretslib
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -34,6 +43,126 @@ SC_API = "https://api-v2.soundcloud.com"
 DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "data"))
 SC_TOKEN_PATH = DATA_DIR / "sc_token"
 YT_COOKIES_PATH = DATA_DIR / "yt-cookies.txt"
+
+# --- Auth ----------------------------------------------------------------
+# A single shared password gates the whole app. The gate is only active when
+# SCDL_PASSWORD is set; leave it unset for local/dev and the app stays open.
+LOGIN_PATH = Path(__file__).parent / "login.html"
+APP_PASSWORD = os.environ.get("SCDL_PASSWORD") or None
+SESSION_COOKIE = "scdl_session"
+SESSION_TTL = 30 * 24 * 3600  # 30 days
+SESSION_SECRET_PATH = DATA_DIR / "session_secret"
+# Mark the cookie Secure only where we actually serve HTTPS. On fly (which sets
+# FLY_APP_NAME and forces TLS) that's always; locally over http://localhost a
+# Secure cookie would be silently dropped by the browser, breaking login.
+COOKIE_SECURE = bool(os.environ.get("FLY_APP_NAME"))
+# Clients from these IPs skip the login page and are logged in automatically.
+TRUSTED_IPS = {"170.64.251.115"}
+# Endpoints reachable without a session; everything else requires auth.
+PUBLIC_PATHS = {"/login", "/api/login", "/api/ping"}
+
+if APP_PASSWORD is None:
+    print("WARNING: SCDL_PASSWORD is not set — the app is UNAUTHENTICATED "
+          "and open to anyone who can reach it.", flush=True)
+
+
+def _session_secret() -> bytes:
+    """Persistent random key for signing session cookies. Generated once and
+    stored on the data volume so sessions survive restarts and redeploys."""
+    try:
+        return SESSION_SECRET_PATH.read_bytes()
+    except FileNotFoundError:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        key = secretslib.token_bytes(32)
+        SESSION_SECRET_PATH.write_bytes(key)
+        try:
+            SESSION_SECRET_PATH.chmod(0o600)
+        except OSError:
+            pass
+        return key
+
+
+def _make_session_cookie() -> str:
+    exp = str(int(time.time()) + SESSION_TTL)
+    sig = hmac.new(_session_secret(), exp.encode(), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _session_valid(cookie: Optional[str]) -> bool:
+    if not cookie or "." not in cookie:
+        return False
+    exp, _, sig = cookie.partition(".")
+    expected = hmac.new(_session_secret(), exp.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return False
+    try:
+        return int(exp) > time.time()
+    except ValueError:
+        return False
+
+
+def _client_ip(request: Request) -> str:
+    # Behind fly's proxy the socket peer is the proxy itself; the real client
+    # IP is in Fly-Client-IP (which fly sets and clients cannot spoof). Fall
+    # back to the socket address for direct/local connections.
+    return (request.headers.get("fly-client-ip")
+            or (request.client.host if request.client else ""))
+
+
+def _is_authed(request: Request) -> bool:
+    if APP_PASSWORD is None:
+        return True
+    if _client_ip(request) in TRUSTED_IPS:
+        return True
+    return _session_valid(request.cookies.get(SESSION_COOKIE))
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS or _is_authed(request):
+        return await call_next(request)
+    # Unauthenticated: send browsers to the login page, APIs a JSON 401.
+    accepts_html = "text/html" in request.headers.get("accept", "")
+    if request.method == "GET" and accepts_html:
+        return RedirectResponse("/login", status_code=303)
+    return JSONResponse({"detail": "authentication required"}, status_code=401)
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    # Already authed (e.g. a trusted IP) — no point showing the form.
+    if _is_authed(request):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(LOGIN_PATH)
+
+
+@app.post("/api/login")
+async def do_login(req: LoginRequest):
+    if APP_PASSWORD is None:
+        raise HTTPException(503, "no password configured on the server")
+    if not hmac.compare_digest(req.password, APP_PASSWORD):
+        raise HTTPException(401, "incorrect password")
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        SESSION_COOKIE,
+        _make_session_cookie(),
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+    )
+    return resp
+
+
+@app.post("/api/logout")
+async def do_logout() -> JSONResponse:
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
 
 # Maps short tokens to absolute paths of files we've just saved. The browser
 # fetches /api/file/<token> to download them. Tokens keep this endpoint from

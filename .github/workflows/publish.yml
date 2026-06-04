@@ -8,6 +8,7 @@ on:
       - ".dockerignore"
       - "main.py"
       - "index.html"
+      - "login.html"
       - "pyproject.toml"
       - ".github/workflows/publish.yml"
   workflow_dispatch:
@@ -21,14 +22,21 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: scdl
+    outputs:
+      image_ref: ${{ steps.ref.outputs.image_ref }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
       # GHCR refs must be lowercase. github.repository_owner preserves case,
-      # so normalise it here.
+      # so normalise it here. Expose it as a step output too so the deploy job
+      # can pin to this exact build.
       - name: Resolve image ref
+        id: ref
         run: |
-          echo "IMAGE_REF=${REGISTRY}/${OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_ENV"
+          REF="${REGISTRY}/${OWNER,,}/${IMAGE_NAME}"
+          echo "IMAGE_REF=${REF}" >> "$GITHUB_ENV"
+          echo "image_ref=${REF}" >> "$GITHUB_OUTPUT"
         env:
           OWNER: ${{ github.repository_owner }}
 
@@ -55,6 +63,7 @@ jobs:
             type=sha,format=short
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -67,3 +76,26 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    # Only ship from main. The published GHCR package is public, so fly pulls
+    # it without registry credentials.
+    if: github.ref == 'refs/heads/main'
+    concurrency:
+      group: deploy-scdl
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Deploy the exact image this run built, pinned by digest so the deploy
+      # is immutable and can't race a newer push to :latest.
+      - name: Deploy to fly.io
+        run: flyctl deploy --image "${IMAGE}@${DIGEST}"
+        env:
+          IMAGE: ${{ needs.publish.outputs.image_ref }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          FLY_API_TOKEN: ${{ secrets.FLY_IO_API_TOKEN }}

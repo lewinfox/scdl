@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir \
         "httpx>=0.27" \
         "mutagen>=1.47"
 
-COPY main.py index.html ./
+COPY main.py index.html login.html ./
 
 EXPOSE 8765
 

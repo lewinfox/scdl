@@ -3,7 +3,13 @@ services:
     # Live-mount the source so edits on the host show up in the container.
     # main.py reloads via uvicorn --reload; index.html is read from disk on
     # every request, so a browser refresh is enough.
+    environment:
+      # Throwaway dev password so the login page is exercised locally. The gate
+      # only turns on when SCDL_PASSWORD is set; prod sets the real value via
+      # `flyctl secrets set SCDL_PASSWORD=...`.
+      - SCDL_PASSWORD=dev
     volumes:
       - ./main.py:/app/main.py
       - ./index.html:/app/index.html
+      - ./login.html:/app/login.html
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--reload"]

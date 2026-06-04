@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SoundCloud Archiver — Login</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                --bg: #05000d;
+                --panel: #0a0418;
+                --text: #f3eaff;
+                --muted: #9a8fc7;
+                --border: #2a1255;
+                --neon: #00f0ff;
+                --neon-2: #ff2bd6;
+                --neon-4: #f9f871;
+                --bad: #ff4d6d;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            html,
+            body {
+                height: 100%;
+            }
+            body {
+                font-family:
+                    ui-sans-serif, system-ui, -apple-system, sans-serif;
+                background: var(--bg);
+                color: var(--text);
+                margin: 0;
+                display: grid;
+                place-items: center;
+                min-height: 100%;
+                overflow: hidden;
+            }
+            /* moving neon grid */
+            body::before {
+                content: "";
+                position: fixed;
+                inset: -50%;
+                z-index: 0;
+                pointer-events: none;
+                background-image:
+                    linear-gradient(
+                        rgba(0, 240, 255, 0.18) 1px,
+                        transparent 1px
+                    ),
+                    linear-gradient(
+                        90deg,
+                        rgba(255, 43, 214, 0.18) 1px,
+                        transparent 1px
+                    );
+                background-size: 40px 40px;
+                -webkit-mask-image: radial-gradient(
+                    ellipse at 50% 50%,
+                    black 0,
+                    transparent 70%
+                );
+                mask-image: radial-gradient(
+                    ellipse at 50% 50%,
+                    black 0,
+                    transparent 70%
+                );
+                animation: grid-drift 18s linear infinite;
+            }
+            @keyframes grid-drift {
+                0% {
+                    transform: translate(0, 0);
+                }
+                100% {
+                    transform: translate(40px, 40px);
+                }
+            }
+            form {
+                position: relative;
+                z-index: 1;
+                background: rgba(10, 4, 24, 0.85);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 2.2rem 2rem;
+                width: min(92vw, 380px);
+                display: grid;
+                gap: 1.1rem;
+                box-shadow:
+                    0 0 0 1px rgba(0, 240, 255, 0.15),
+                    0 0 40px rgba(176, 38, 255, 0.25);
+            }
+            h1 {
+                margin: 0;
+                font-size: 1.25rem;
+                letter-spacing: 0.18em;
+                text-transform: uppercase;
+                text-align: center;
+                text-shadow:
+                    0 0 8px var(--neon),
+                    0 0 18px var(--neon-2);
+            }
+            input[type="password"] {
+                background: rgba(5, 0, 13, 0.7);
+                color: var(--neon);
+                border: 1px solid var(--neon);
+                border-radius: 6px;
+                padding: 0.65rem 0.85rem;
+                font: inherit;
+                width: 100%;
+                text-align: center;
+                letter-spacing: 0.25em;
+                text-shadow: 0 0 6px rgba(0, 240, 255, 0.7);
+                box-shadow:
+                    0 0 0 1px rgba(0, 240, 255, 0.2),
+                    0 0 14px rgba(0, 240, 255, 0.25),
+                    inset 0 0 12px rgba(0, 240, 255, 0.12);
+                transition: all 200ms;
+            }
+            input[type="password"]::placeholder {
+                color: rgba(0, 240, 255, 0.4);
+                letter-spacing: 0.1em;
+            }
+            input[type="password"]:focus {
+                outline: none;
+                border-color: var(--neon-2);
+                color: var(--neon-2);
+                text-shadow: 0 0 6px rgba(255, 43, 214, 0.7);
+                box-shadow:
+                    0 0 0 1px var(--neon-2),
+                    0 0 22px rgba(255, 43, 214, 0.6),
+                    inset 0 0 18px rgba(255, 43, 214, 0.18);
+            }
+            button {
+                background: linear-gradient(
+                    135deg,
+                    rgba(0, 240, 255, 0.15),
+                    rgba(255, 43, 214, 0.15)
+                );
+                color: #fff;
+                border: 2px solid var(--neon);
+                border-radius: 6px;
+                padding: 0.8rem 1.8rem;
+                font: inherit;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: 0.22em;
+                cursor: pointer;
+                text-shadow:
+                    0 0 6px var(--neon),
+                    0 0 14px var(--neon-2);
+                box-shadow:
+                    0 0 14px var(--neon),
+                    0 0 28px rgba(0, 240, 255, 0.4),
+                    inset 0 0 18px rgba(0, 240, 255, 0.25);
+                transition: transform 120ms;
+            }
+            button:hover:not(:disabled) {
+                transform: translateY(-1px) scale(1.02);
+                border-color: var(--neon-4);
+            }
+            button:disabled {
+                color: var(--muted);
+                border-color: var(--border);
+                text-shadow: none;
+                box-shadow: none;
+                cursor: not-allowed;
+                background: transparent;
+            }
+            .error {
+                margin: 0;
+                min-height: 1.2em;
+                color: var(--bad);
+                font-size: 0.85rem;
+                text-align: center;
+                text-shadow: 0 0 8px rgba(255, 77, 109, 0.6);
+            }
+        </style>
+    </head>
+    <body>
+        <form id="login-form" autocomplete="off">
+            <h1>⚡ Archiver</h1>
+            <input
+                id="password"
+                type="password"
+                placeholder="password"
+                autocomplete="current-password"
+                autofocus
+            />
+            <button id="submit" type="submit">Enter</button>
+            <p class="error" id="error"></p>
+        </form>
+        <script>
+            const form = document.getElementById("login-form");
+            const pw = document.getElementById("password");
+            const btn = document.getElementById("submit");
+            const err = document.getElementById("error");
+
+            form.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                err.textContent = "";
+                btn.disabled = true;
+                try {
+                    const r = await fetch("/api/login", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ password: pw.value }),
+                    });
+                    if (r.ok) {
+                        location.href = "/";
+                        return;
+                    }
+                    const data = await r.json().catch(() => ({}));
+                    err.textContent = data.detail || "login failed";
+                } catch (e) {
+                    err.textContent = "network error";
+                }
+                btn.disabled = false;
+                pw.focus();
+                pw.select();
+            });
+        </script>
+    </body>
+</html>
