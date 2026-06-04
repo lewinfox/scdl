@@ -1424,6 +1424,7 @@
                     this.url = url;
                     // track id -> { el, state, token }
                     this.tracks = new Map();
+                    this.total = 0;
                     this.tracksStarted = false;
                     this.streamDone = false;
                     this.hadError = false;
@@ -1531,8 +1532,9 @@
                         return;
                     }
                     if (ev.type === "track") {
+                        this.total = ev.total || this.total;
                         this.upsertTrack(ev.id, ev.name, ev.state);
-                        this.setState("running…", "info");
+                        this.updateProgress();
                         return;
                     }
                     if (ev.type === "saved") {
@@ -1555,6 +1557,20 @@
                     }
                     // log / info events are intentionally ignored — the pills
                     // are the whole UI now.
+                }
+
+                updateProgress() {
+                    // Live "x/y" of completed tracks while a playlist runs.
+                    // finalize() takes over the header once the stream ends.
+                    if (this.streamDone) return;
+                    const done = [...this.tracks.values()].filter(
+                        (r) => r.state === "done",
+                    ).length;
+                    if (this.total > 1) {
+                        this.setState(`${done}/${this.total}`, "info");
+                    } else {
+                        this.setState("running…", "info");
+                    }
                 }
 
                 finalize() {

@@ -6,6 +6,8 @@ primary_region = "syd"
 
 [env]
   SCDL_DATA_DIR = "/data"
+  # Match the parallel-download fan-out to the bigger VM's core count.
+  SCDL_CONCURRENCY = "6"
 
 [http_service]
   internal_port = 8765
@@ -19,5 +21,5 @@ primary_region = "syd"
   destination = "/data"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
+  size = "shared-cpu-4x"
+  memory = "2gb"
