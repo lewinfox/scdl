@@ -301,6 +301,32 @@ async def start_download(req: DownloadRequest):
     )
 
 
+async def _hydrate_track(client, client_id: str, stub: dict) -> Optional[dict]:
+    """Playlist entries past the first few come back as stubs — typically just
+    an id, with no media/title/user. Fetch the full track object by id (falling
+    back to resolving its permalink_url) so both the SoundCloud download and the
+    YouTube fallback get the real artist/title metadata."""
+    track_id = stub.get("id")
+    if track_id is not None:
+        try:
+            r = await client.get(f"{SC_API}/tracks/{track_id}",
+                                 params={"client_id": client_id})
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            pass
+    permalink = stub.get("permalink_url")
+    if permalink:
+        try:
+            r = await client.get(f"{SC_API}/resolve",
+                                 params={"url": permalink, "client_id": client_id})
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            pass
+    return None
+
+
 async def stream_direct_api(
     req: DownloadRequest, output_dir: Path, url_changed: bool,
 ) -> AsyncGenerator[str, None]:
@@ -361,27 +387,33 @@ async def stream_direct_api(
 
         for i, t in enumerate(tracks, 1):
             label = f"[{i}/{len(tracks)}]" if len(tracks) > 1 else ""
-            # Playlist entries are abbreviated — re-resolve for the full media block.
-            if "media" not in t and t.get("permalink_url"):
-                try:
-                    rr = await client.get(f"{SC_API}/resolve",
-                                          params={"url": t["permalink_url"], "client_id": client_id})
-                    rr.raise_for_status()
-                    t = rr.json()
-                except Exception as e:
-                    yield sse({"type": "error", "msg": f"{label} could not fetch full track: {e}"})
-                    continue
+            try:
+                # Playlist entries past the first few are abbreviated stubs (often
+                # just an id, with no media/title/user) — hydrate to the full track.
+                if "media" not in t:
+                    hydrated = await _hydrate_track(client, client_id, t)
+                    if hydrated is None:
+                        yield sse({"type": "error",
+                                   "msg": f"{label} could not fetch full track metadata"})
+                        continue
+                    t = hydrated
 
-            title = t.get("title") or "untitled"
-            user = (t.get("user") or {}).get("username") or "unknown"
-            yield sse({"type": "info", "msg": f"{label} {user} — {title}"})
+                title = t.get("title") or "untitled"
+                user = (t.get("user") or {}).get("username") or "unknown"
+                yield sse({"type": "info", "msg": f"{label} {user} — {title}"})
 
-            status = {"ok": False}
-            async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
-                yield ev
-            if not status["ok"]:
-                async for ev in _youtube_fallback(user, title, output_dir, label):
+                status = {"ok": False}
+                async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
                     yield ev
+                if not status["ok"]:
+                    async for ev in _youtube_fallback(user, title, output_dir, label):
+                        yield ev
+            except Exception as e:
+                # A single failing track must not tear down the SSE stream and
+                # abort the rest of a playlist — report it and carry on.
+                yield sse({"type": "error",
+                           "msg": f"{label} unexpected error, skipping: {e}"})
+                continue
         yield sse({"type": "done", "msg": "complete"})
 
 
@@ -456,8 +488,10 @@ async def _download_track(
                     with out_path.open("wb") as f:
                         async for chunk in resp.aiter_bytes(64 * 1024):
                             f.write(chunk)
-                yield sse({"type": "info",
-                           "msg": f"{label}   saved {out_path.stat().st_size:,} bytes"})
+                size = out_path.stat().st_size
+                if size == 0:
+                    raise RuntimeError("empty response body")
+                yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
                     await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
@@ -485,20 +519,36 @@ async def _download_track(
                       "-vn",
                       "-c:a", "libmp3lame", "-q:a", "2",
                       str(out_path)]
-            proc = await asyncio.create_subprocess_exec(
-                *ff_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            assert proc.stdout is not None
-            async for raw in proc.stdout:
-                line = raw.decode(errors="replace").rstrip()
-                if line:
-                    yield sse({"type": "log", "msg": f"{label}   {line}"})
-            rc = await proc.wait()
-            if rc == 0:
-                yield sse({"type": "info",
-                           "msg": f"{label}   saved {out_path.stat().st_size:,} bytes"})
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *ff_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                assert proc.stdout is not None
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").rstrip()
+                    if line:
+                        yield sse({"type": "log", "msg": f"{label}   {line}"})
+                rc = await proc.wait()
+            except Exception as e:
+                # ffmpeg failed to spawn, or its input stream errored mid-read
+                # (e.g. "Error in input stream"). Clean up and fall through to the
+                # next transcoding instead of letting it crash the whole stream.
+                yield sse({"type": "info", "msg": f"{label}   transcode failed: {e}"})
+                if proc is not None and proc.returncode is None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+                if out_path.exists():
+                    out_path.unlink()
+                continue
+            if rc == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                size = out_path.stat().st_size
+                yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
                     await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
@@ -508,7 +558,7 @@ async def _download_track(
                 status["ok"] = True
                 return
             else:
-                yield sse({"type": "info", "msg": f"{label}   ffmpeg exit {rc}"})
+                yield sse({"type": "info", "msg": f"{label}   ffmpeg exit {rc} (no usable output)"})
                 if out_path.exists():
                     out_path.unlink()
                 continue
@@ -581,6 +631,14 @@ async def _youtube_fallback(
         # rather than guessing.
         expected_mp3 = output_dir / f"[YouTube] [{sanitize_filename(user)}] {sanitize_filename(title)}.mp3"
         if expected_mp3.exists():
+            # Replace yt-dlp's embedded YouTube metadata with the SoundCloud
+            # artist/title so the tags match the filename and source intent.
+            try:
+                await asyncio.to_thread(_write_mp3_tags, expected_mp3, user, title)
+                yield sse({"type": "info",
+                           "msg": f"{label} YT  tagged artist/title from SoundCloud"})
+            except Exception as e:
+                yield sse({"type": "info", "msg": f"{label} YT  tag write failed: {e}"})
             yield _saved_event(expected_mp3)
         else:
             yield sse({"type": "info",
