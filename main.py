@@ -39,6 +39,14 @@ DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
 
+# How many playlist tracks to download at once. Most SC tracks are progressive
+# MP3 (network-bound direct copies), so parallelism is a clear win; the cap keeps
+# concurrent ffmpeg transcodes from swamping a small VM. Override via env.
+try:
+    DOWNLOAD_CONCURRENCY = max(1, int(os.environ.get("SCDL_CONCURRENCY", "4")))
+except ValueError:
+    DOWNLOAD_CONCURRENCY = 4
+
 # Persistent storage for the SC oauth_token and (optional) YT cookies.txt.
 # Overridable via SCDL_DATA_DIR — in Docker this points at a mounted volume.
 DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "data"))
@@ -280,10 +288,19 @@ async def get_file(token: str) -> FileResponse:
     )
 
 
-def _saved_event(path: Path) -> str:
+def _saved_event(path: Path, track_id: Optional[int] = None) -> str:
     token = uuid.uuid4().hex
     _file_tokens[token] = path
-    return sse({"type": "saved", "token": token, "filename": path.name})
+    payload = {"type": "saved", "token": token, "filename": path.name}
+    if track_id is not None:
+        payload["id"] = track_id
+    return sse(payload)
+
+
+def _track_event(track_id: int, total: int, name: str, state: str) -> str:
+    """Per-track status for the UI card. state: sc | yt | done | failed."""
+    return sse({"type": "track", "id": track_id, "total": total,
+                "name": name, "state": state})
 
 
 @app.post("/api/download")
@@ -325,6 +342,42 @@ async def _hydrate_track(client, client_id: str, stub: dict) -> Optional[dict]:
         except Exception:
             pass
     return None
+
+
+async def _process_track(
+    client, client_id: str, t: dict, output_dir: Path, idx: int, total: int,
+) -> AsyncGenerator[str, None]:
+    """Hydrate one (possibly stub) entry, download it from SoundCloud, and fall
+    back to YouTube if nothing playable comes back. Yields SSE events, including
+    `track` status updates that drive the per-track card in the UI."""
+    label = f"[{idx}/{total}]" if total > 1 else ""
+    if "media" not in t:
+        hydrated = await _hydrate_track(client, client_id, t)
+        if hydrated is None:
+            yield sse({"type": "info", "msg": f"{label} could not fetch full track metadata"})
+            yield _track_event(idx, total, "unknown track", "failed")
+            return
+        t = hydrated
+
+    title = t.get("title") or "untitled"
+    user = (t.get("user") or {}).get("username") or "unknown"
+    name = f"{user} — {title}"
+    # Blue: downloading from SoundCloud.
+    yield _track_event(idx, total, name, "sc")
+
+    status = {"ok": False}
+    async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status, idx):
+        yield ev
+    if status["ok"]:
+        yield _track_event(idx, total, name, "done")
+        return
+
+    # Nothing playable from SC — yellow while we try YouTube.
+    yield _track_event(idx, total, name, "yt")
+    yt_status = {"ok": False}
+    async for ev in _youtube_fallback(user, title, output_dir, label, idx, yt_status):
+        yield ev
+    yield _track_event(idx, total, name, "done" if yt_status["ok"] else "failed")
 
 
 async def stream_direct_api(
@@ -385,41 +438,49 @@ async def stream_direct_api(
                        "msg": f"unsupported resource kind {kind!r} (need a track or playlist URL)"})
             return
 
-        for i, t in enumerate(tracks, 1):
-            label = f"[{i}/{len(tracks)}]" if len(tracks) > 1 else ""
-            try:
-                # Playlist entries past the first few are abbreviated stubs (often
-                # just an id, with no media/title/user) — hydrate to the full track.
-                if "media" not in t:
-                    hydrated = await _hydrate_track(client, client_id, t)
-                    if hydrated is None:
-                        yield sse({"type": "error",
-                                   "msg": f"{label} could not fetch full track metadata"})
-                        continue
-                    t = hydrated
+        # Download tracks concurrently, multiplexing each worker's SSE events
+        # onto the response through a queue. A semaphore bounds how many run at
+        # once; per-track errors are caught so one bad track can't abort the rest.
+        total = len(tracks)
+        queue: asyncio.Queue = asyncio.Queue()
+        sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
 
-                title = t.get("title") or "untitled"
-                user = (t.get("user") or {}).get("username") or "unknown"
-                yield sse({"type": "info", "msg": f"{label} {user} — {title}"})
+        async def _run_track(i: int, t: dict) -> None:
+            label = f"[{i}/{total}]" if total > 1 else ""
+            async with sem:
+                try:
+                    async for ev in _process_track(client, client_id, t, output_dir, i, total):
+                        await queue.put(ev)
+                except Exception as e:
+                    await queue.put(sse({"type": "info",
+                                         "msg": f"{label} unexpected error, skipping: {e}"}))
+                    await queue.put(_track_event(i, total, "", "failed"))
 
-                status = {"ok": False}
-                async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status):
-                    yield ev
-                if not status["ok"]:
-                    async for ev in _youtube_fallback(user, title, output_dir, label):
-                        yield ev
-            except Exception as e:
-                # A single failing track must not tear down the SSE stream and
-                # abort the rest of a playlist — report it and carry on.
-                yield sse({"type": "error",
-                           "msg": f"{label} unexpected error, skipping: {e}"})
-                continue
+        tasks = [asyncio.create_task(_run_track(i, t)) for i, t in enumerate(tracks, 1)]
+
+        async def _signal_done() -> None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await queue.put(None)  # sentinel: every worker has finished
+
+        signal_task = asyncio.create_task(_signal_done())
+        try:
+            while True:
+                ev = await queue.get()
+                if ev is None:
+                    break
+                yield ev
+        finally:
+            # Client disconnected or we're unwinding — stop any in-flight work.
+            for tsk in tasks:
+                tsk.cancel()
+            signal_task.cancel()
+
         yield sse({"type": "done", "msg": "complete"})
 
 
 async def _download_track(
     client, client_id: str, track: dict, output_dir: Path,
-    user: str, title: str, label: str, status: dict,
+    user: str, title: str, label: str, status: dict, track_id: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
     """Attempt each transcoding for a single track until one succeeds."""
     import httpx
@@ -497,7 +558,7 @@ async def _download_track(
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
-                yield _saved_event(out_path)
+                yield _saved_event(out_path, track_id)
                 status["ok"] = True
                 return
             except Exception as e:
@@ -554,7 +615,7 @@ async def _download_track(
                     yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
-                yield _saved_event(out_path)
+                yield _saved_event(out_path, track_id)
                 status["ok"] = True
                 return
             else:
@@ -586,9 +647,11 @@ def _write_mp3_tags(path: Path, artist: str, title: str) -> None:
 
 async def _youtube_fallback(
     user: str, title: str, output_dir: Path, label: str,
+    track_id: Optional[int] = None, status: Optional[dict] = None,
 ) -> AsyncGenerator[str, None]:
     """When SC returns nothing playable, try yt-dlp ytsearch1 against YouTube.
-    Output filename is prefixed [YouTube] so the source is unambiguous."""
+    Output filename is prefixed [YouTube] so the source is unambiguous. Sets
+    status["ok"] on success so the caller knows whether a file was produced."""
     if shutil.which("yt-dlp") is None:
         yield sse({"type": "error", "msg": f"{label} YT fallback: yt-dlp not on PATH"})
         return
@@ -639,7 +702,9 @@ async def _youtube_fallback(
                            "msg": f"{label} YT  tagged artist/title from SoundCloud"})
             except Exception as e:
                 yield sse({"type": "info", "msg": f"{label} YT  tag write failed: {e}"})
-            yield _saved_event(expected_mp3)
+            if status is not None:
+                status["ok"] = True
+            yield _saved_event(expected_mp3, track_id)
         else:
             yield sse({"type": "info",
                        "msg": f"{label} YT fallback: couldn't locate output for download link"})

@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>SoundCloud Archiver</title>
+        <title>SoundCloud Downloader</title>
         <style>
             :root {
                 color-scheme: dark;
@@ -153,7 +153,7 @@
                 }
             }
             .wrap {
-                max-width: 1200px;
+                max-width: 720px;
                 margin-inline: auto;
                 position: relative;
                 z-index: 1;
@@ -350,7 +350,6 @@
                 }
             }
 
-            .howto h2,
             .auth h2 {
                 font-size: 0.8rem;
                 text-transform: uppercase;
@@ -624,28 +623,6 @@
             #bw-safari:checked ~ .pane-safari {
                 display: block;
             }
-            .howto ol {
-                margin: 0;
-                padding-left: 1.2rem;
-            }
-            .howto ol li {
-                margin: 0.3rem 0;
-                font-size: 0.92rem;
-            }
-            .howto ol li::marker {
-                color: var(--neon);
-            }
-            .howto .note {
-                color: var(--muted);
-                font-size: 0.83rem;
-                margin: 0.8rem 0 0;
-            }
-            .howto strong {
-                color: var(--neon-4);
-                text-shadow:
-                    0 0 8px var(--neon-4),
-                    0 0 14px rgba(249, 248, 113, 0.5);
-            }
 
             form {
                 display: grid;
@@ -872,133 +849,83 @@
                     inset 0 0 8px rgba(249, 248, 113, 0.18);
                 animation: pulse 1.6s ease-in-out infinite;
             }
-            .dl-files {
-                display: grid;
-                gap: 0.5rem;
+            /* Shown only for stream-level errors (bad token, resolve failed). */
+            .dl-note {
                 margin-bottom: 0.7rem;
+                padding: 0.5rem 0.75rem;
+                border: 1px solid var(--bad);
+                border-radius: 6px;
+                color: var(--bad);
+                font-size: 0.8rem;
+                background: rgba(255, 77, 109, 0.08);
+                text-shadow: 0 0 6px rgba(255, 77, 109, 0.5);
             }
-            .dl-files[hidden] {
+            .dl-note[hidden] {
                 display: none;
             }
-            .dl-files .file-btn {
-                padding: 0.55rem 0.85rem;
-                font-size: 0.78rem;
+            /* One pill per track; the whole card glows by status. */
+            .dl-tracks {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.55rem;
             }
-            .dl-log {
-                background:
-                    repeating-linear-gradient(
-                        to bottom,
-                        rgba(0, 0, 0, 0) 0px,
-                        rgba(0, 0, 0, 0) 2px,
-                        rgba(0, 240, 255, 0.04) 3px,
-                        rgba(0, 0, 0, 0) 4px
-                    ),
-                    #03000a;
-                border: 1px solid var(--neon-3);
-                border-radius: 6px;
-                padding: 0.55rem 0.8rem;
-                /* clamp to ~4 lines tall */
-                height: calc(0.72rem * 1.55 * 4 + 1.1rem);
-                overflow: auto;
-                white-space: pre-wrap;
-                font-family: ui-monospace, "SF Mono", Menlo, monospace;
-                font-size: 0.72rem;
-                line-height: 1.55;
-                margin: 0;
-                color: #b9f5ff;
-                text-shadow:
-                    0 0 4px rgba(0, 240, 255, 0.55),
-                    0 0 10px rgba(0, 240, 255, 0.25);
-                box-shadow:
-                    inset 0 0 18px rgba(0, 240, 255, 0.06);
-            }
-            .file-btn {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.6rem;
-                padding: 0.7rem 1rem;
-                border: 2px solid var(--good);
-                border-radius: 6px;
-                color: var(--good);
-                background: linear-gradient(
-                    135deg,
-                    rgba(109, 255, 182, 0.12),
-                    rgba(0, 240, 255, 0.08)
-                );
-                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+            .dl-track {
+                --glow: var(--info);
+                max-width: 100%;
+                padding: 0.5rem 0.9rem;
+                border-radius: 999px;
+                border: 1px solid var(--glow);
+                background: rgba(5, 0, 13, 0.6);
+                color: var(--text);
                 font-size: 0.82rem;
+                font-weight: 600;
+                letter-spacing: 0.01em;
                 text-decoration: none;
-                text-shadow:
-                    0 0 8px var(--good),
-                    0 0 16px rgba(109, 255, 182, 0.55);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 box-shadow:
-                    0 0 16px var(--good),
-                    0 0 32px rgba(109, 255, 182, 0.45),
-                    inset 0 0 18px rgba(109, 255, 182, 0.18);
-                animation:
-                    file-light-up 1.1s ease-out,
-                    file-glow 2.6s ease-in-out 1.1s infinite;
-                transition: transform 120ms;
-                word-break: break-all;
+                    0 0 8px var(--glow),
+                    inset 0 0 10px rgba(255, 255, 255, 0.04);
+                transition:
+                    box-shadow 220ms,
+                    border-color 220ms,
+                    color 220ms;
             }
-            .file-btn::before {
-                content: "⬇";
-                font-size: 1.05rem;
-                flex: 0 0 auto;
+            /* Blue: downloading from SoundCloud. */
+            .dl-track.sc {
+                --glow: var(--neon);
+                color: #d6fbff;
+                animation: track-pulse 1.4s ease-in-out infinite;
             }
-            .file-btn:hover {
-                transform: translateY(-1px) scale(1.01);
-                border-color: var(--neon-4);
-                color: var(--neon-4);
-                text-shadow:
-                    0 0 8px var(--neon-4),
-                    0 0 18px rgba(249, 248, 113, 0.6);
+            /* Yellow: falling back to YouTube. */
+            .dl-track.yt {
+                --glow: var(--neon-4);
+                color: #fffce0;
+                animation: track-pulse 1.4s ease-in-out infinite;
             }
-            .file-btn.consumed,
-            .file-btn.consumed:hover {
-                border-color: var(--border);
-                color: var(--muted);
-                background: rgba(10, 4, 24, 0.5);
-                text-shadow: none;
-                box-shadow: none;
-                animation: none;
-                pointer-events: none;
-                opacity: 0.55;
-                transform: none;
+            /* Red: nothing playable found. */
+            .dl-track.failed {
+                --glow: var(--bad);
+                color: #ffd9e0;
             }
-            .file-btn.consumed::before {
-                content: "✓";
-                color: var(--muted);
+            /* Green: saved. */
+            .dl-track.done {
+                --glow: var(--good);
+                color: #d6ffe9;
             }
-            @keyframes file-light-up {
-                0% {
-                    opacity: 0;
-                    transform: translateY(6px);
-                    filter: brightness(0.3) saturate(0.4);
-                    box-shadow: none;
-                }
-                40% {
-                    filter: brightness(1.8) saturate(1.4);
-                }
-                100% {
-                    opacity: 1;
-                    transform: translateY(0);
-                    filter: brightness(1) saturate(1);
-                }
-            }
-            @keyframes file-glow {
+            @keyframes track-pulse {
                 0%,
                 100% {
                     box-shadow:
-                        0 0 16px var(--good),
-                        0 0 32px rgba(109, 255, 182, 0.45),
-                        inset 0 0 18px rgba(109, 255, 182, 0.18);
+                        0 0 7px var(--glow),
+                        inset 0 0 10px rgba(255, 255, 255, 0.04);
                 }
                 50% {
                     box-shadow:
-                        0 0 22px var(--good),
-                        0 0 48px rgba(109, 255, 182, 0.65),
-                        inset 0 0 24px rgba(109, 255, 182, 0.28);
+                        0 0 18px var(--glow),
+                        0 0 30px var(--glow),
+                        inset 0 0 14px rgba(255, 255, 255, 0.06);
                 }
             }
             .dot {
@@ -1124,10 +1051,6 @@
                 body {
                     padding: 2.5rem 1.5rem;
                 }
-                .grid {
-                    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-                    align-items: start;
-                }
                 h1 {
                     font-size: 2.6rem;
                 }
@@ -1157,325 +1080,7 @@
             </header>
 
             <div class="grid">
-                <div class="col col-in">
-                    <details class="panel auth" id="auth-panel" open>
-                        <summary>
-                            <h2>Auth</h2>
-                            <div class="auth-status" id="auth-status">
-                                <span class="badge dim">checking…</span>
-                            </div>
-                        </summary>
-
-                        <div class="auth-body">
-                        <div class="auth-section">
-                            <label
-                                >SoundCloud oauth_token
-                                <input
-                                    id="sc-token"
-                                    type="password"
-                                    autocomplete="off"
-                                    spellcheck="false"
-                                    placeholder="paste the cookie value"
-                                />
-                            </label>
-                            <div class="auth-actions">
-                                <button
-                                    id="save-sc-token"
-                                    type="button"
-                                    class="small-btn"
-                                >
-                                    Save token
-                                </button>
-                                <button
-                                    id="clear-sc-token"
-                                    type="button"
-                                    class="small-btn ghost"
-                                >
-                                    Clear
-                                </button>
-                            </div>
-                            <div class="auth-msg" id="sc-msg"></div>
-
-                            <details class="walkthrough">
-                                <summary>How to find this cookie</summary>
-                                <div class="tab-control">
-                                    <input
-                                        type="radio"
-                                        name="bw"
-                                        id="bw-chrome"
-                                        checked
-                                    />
-                                    <input
-                                        type="radio"
-                                        name="bw"
-                                        id="bw-firefox"
-                                    />
-                                    <input
-                                        type="radio"
-                                        name="bw"
-                                        id="bw-safari"
-                                    />
-                                    <div class="tab-labels">
-                                        <label for="bw-chrome">Chromium</label>
-                                        <label for="bw-firefox">Firefox</label>
-                                        <label for="bw-safari">Safari</label>
-                                    </div>
-                                    <div class="pane pane-chrome">
-                                        <p class="muted">
-                                            Chrome, Edge, Brave, Opera, Vivaldi,
-                                            Arc — all use the same DevTools
-                                            layout.
-                                        </p>
-                                        <ol>
-                                            <li>
-                                                Open
-                                                <a
-                                                    href="https://soundcloud.com"
-                                                    target="_blank"
-                                                    rel="noopener"
-                                                    >soundcloud.com</a
-                                                >
-                                                in that browser and confirm
-                                                you're signed in.
-                                            </li>
-                                            <li>
-                                                Press <kbd>F12</kbd> (or
-                                                right-click →
-                                                <strong>Inspect</strong>).
-                                            </li>
-                                            <li>
-                                                Open the
-                                                <strong>Application</strong>
-                                                tab. If you don't see it, click
-                                                <kbd>»</kbd> at the end of the
-                                                tab strip.
-                                            </li>
-                                            <li>
-                                                In the left sidebar:
-                                                <strong>Storage</strong> →
-                                                <strong>Cookies</strong> →
-                                                <code
-                                                    >https://soundcloud.com</code
-                                                >.
-                                            </li>
-                                            <li>
-                                                Find the row whose
-                                                <strong>Name</strong> is
-                                                <code>oauth_token</code>.
-                                                Double-click its
-                                                <strong>Value</strong> cell,
-                                                <kbd>Ctrl</kbd>+<kbd>C</kbd>
-                                                to copy.
-                                            </li>
-                                            <li>
-                                                Paste it above and hit
-                                                <strong>Save token</strong>.
-                                            </li>
-                                        </ol>
-                                    </div>
-                                    <div class="pane pane-firefox">
-                                        <ol>
-                                            <li>
-                                                Open
-                                                <a
-                                                    href="https://soundcloud.com"
-                                                    target="_blank"
-                                                    rel="noopener"
-                                                    >soundcloud.com</a
-                                                >
-                                                in Firefox and confirm you're
-                                                signed in.
-                                            </li>
-                                            <li>
-                                                Press <kbd>F12</kbd> (or
-                                                right-click →
-                                                <strong>Inspect</strong>).
-                                            </li>
-                                            <li>
-                                                Click the
-                                                <strong>Storage</strong>
-                                                tab. (May be hidden under
-                                                <kbd>»</kbd> on narrow windows.)
-                                            </li>
-                                            <li>
-                                                Expand
-                                                <strong>Cookies</strong> →
-                                                <code
-                                                    >https://soundcloud.com</code
-                                                >.
-                                            </li>
-                                            <li>
-                                                Click the row named
-                                                <code>oauth_token</code>. The
-                                                full value appears in the panel
-                                                on the right — right-click →
-                                                <strong>Copy</strong>.
-                                            </li>
-                                            <li>
-                                                Paste it above and hit
-                                                <strong>Save token</strong>.
-                                            </li>
-                                        </ol>
-                                    </div>
-                                    <div class="pane pane-safari">
-                                        <ol>
-                                            <li>
-                                                First time only: Safari →
-                                                <strong>Settings</strong> →
-                                                <strong>Advanced</strong> → tick
-                                                <em
-                                                    >Show features for web
-                                                    developers</em
-                                                >.
-                                            </li>
-                                            <li>
-                                                Open
-                                                <a
-                                                    href="https://soundcloud.com"
-                                                    target="_blank"
-                                                    rel="noopener"
-                                                    >soundcloud.com</a
-                                                >
-                                                and confirm you're signed in.
-                                            </li>
-                                            <li>
-                                                Press
-                                                <kbd>⌥</kbd>+<kbd>⌘</kbd>+<kbd
-                                                    >I</kbd
-                                                >
-                                                (or
-                                                <strong>Develop</strong> →
-                                                <em>Show Web Inspector</em>).
-                                            </li>
-                                            <li>
-                                                Click the
-                                                <strong>Storage</strong>
-                                                tab →
-                                                <strong>Cookies</strong> →
-                                                <code>soundcloud.com</code>.
-                                            </li>
-                                            <li>
-                                                Click the row named
-                                                <code>oauth_token</code>, copy
-                                                the <strong>Value</strong>.
-                                            </li>
-                                            <li>
-                                                Paste it above and hit
-                                                <strong>Save token</strong>.
-                                            </li>
-                                        </ol>
-                                    </div>
-                                </div>
-                                <p class="muted">
-                                    The token usually stays valid for weeks or
-                                    months — repeat this only if SC starts
-                                    rejecting it.
-                                </p>
-                            </details>
-                        </div>
-
-                        <div class="auth-section">
-                            <label
-                                >YouTube cookies.txt
-                                <span class="muted"
-                                    >(optional — for the DRM fallback)</span
-                                >
-                                <textarea
-                                    id="yt-cookies"
-                                    rows="3"
-                                    spellcheck="false"
-                                    placeholder="# Netscape HTTP Cookie File&#10;.youtube.com  TRUE  /  ..."
-                                ></textarea>
-                            </label>
-                            <div class="auth-actions">
-                                <button
-                                    id="save-yt-cookies"
-                                    type="button"
-                                    class="small-btn"
-                                >
-                                    Save cookies
-                                </button>
-                                <button
-                                    id="clear-yt-cookies"
-                                    type="button"
-                                    class="small-btn ghost"
-                                >
-                                    Clear
-                                </button>
-                            </div>
-                            <div class="auth-msg" id="yt-msg"></div>
-                            <details class="walkthrough">
-                                <summary>How to export this</summary>
-                                <ol>
-                                    <li>
-                                        Install a cookies.txt exporter on the
-                                        browser you're logged into YouTube with.
-                                        Recommended:
-                                        <em>Get cookies.txt LOCALLY</em>
-                                        (Chromium) or
-                                        <em>cookies.txt</em> (Firefox).
-                                    </li>
-                                    <li>
-                                        Open
-                                        <a
-                                            href="https://youtube.com"
-                                            target="_blank"
-                                            rel="noopener"
-                                            >youtube.com</a
-                                        >
-                                        and confirm you're signed in.
-                                    </li>
-                                    <li>
-                                        Click the extension icon → export for
-                                        current site (or
-                                        <em>Copy</em> the Netscape-format
-                                        output).
-                                    </li>
-                                    <li>
-                                        Paste the file contents above and hit
-                                        <strong>Save cookies</strong>.
-                                    </li>
-                                </ol>
-                                <p class="muted">
-                                    Without this, the YouTube fallback works for
-                                    many tracks but hits the "not a bot" wall
-                                    for the rest.
-                                </p>
-                            </details>
-                        </div>
-                        </div>
-                    </details>
-
-                    <section class="panel howto">
-                        <h2>How to use</h2>
-                        <ol>
-                            <li>
-                                One-time:
-                                <strong
-                                    >paste your SoundCloud oauth_token</strong
-                                >
-                                into the Auth panel above (steps inside).
-                            </li>
-                            <li>Paste a track or playlist URL below.</li>
-                            <li>
-                                Hit <strong>Download</strong>. When each track
-                                is ready a glowing download button appears above
-                                the log.
-                            </li>
-                        </ol>
-                        <p class="note">
-                            The tool works for any track you can play yourself
-                            on SoundCloud. DRM-locked tracks (most major-label
-                            catalog) automatically fall back to YouTube via
-                            <code>yt-dlp</code>; those files are prefixed
-                            <code>[YouTube]</code>. Save YouTube cookies above
-                            to dodge its bot challenge.
-                        </p>
-                    </section>
-
-                </div>
-
-                <div class="col col-out">
+                <div class="col">
                     <form id="f" class="panel">
                         <label
                             >SoundCloud URL
@@ -1489,7 +1094,309 @@
                         </label>
                         <button id="go" type="submit">Download</button>
                     </form>
+
                     <div id="downloads"></div>
+
+                    <details class="panel auth" id="auth-panel">
+                        <summary>
+                            <h2>⚙ Configure</h2>
+                            <div class="auth-status" id="auth-status">
+                                <span class="badge dim">checking…</span>
+                            </div>
+                        </summary>
+
+                        <div class="auth-body">
+                            <div class="auth-section">
+                                <label
+                                    >SoundCloud oauth_token
+                                    <input
+                                        id="sc-token"
+                                        type="password"
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                        placeholder="paste the cookie value"
+                                    />
+                                </label>
+                                <div class="auth-actions">
+                                    <button
+                                        id="save-sc-token"
+                                        type="button"
+                                        class="small-btn"
+                                    >
+                                        Save token
+                                    </button>
+                                    <button
+                                        id="clear-sc-token"
+                                        type="button"
+                                        class="small-btn ghost"
+                                    >
+                                        Clear
+                                    </button>
+                                </div>
+                                <div class="auth-msg" id="sc-msg"></div>
+
+                                <details class="walkthrough">
+                                    <summary>How to find this cookie</summary>
+                                    <div class="tab-control">
+                                        <input
+                                            type="radio"
+                                            name="bw"
+                                            id="bw-chrome"
+                                            checked
+                                        />
+                                        <input
+                                            type="radio"
+                                            name="bw"
+                                            id="bw-firefox"
+                                        />
+                                        <input
+                                            type="radio"
+                                            name="bw"
+                                            id="bw-safari"
+                                        />
+                                        <div class="tab-labels">
+                                            <label for="bw-chrome"
+                                                >Chromium</label
+                                            >
+                                            <label for="bw-firefox"
+                                                >Firefox</label
+                                            >
+                                            <label for="bw-safari"
+                                                >Safari</label
+                                            >
+                                        </div>
+                                        <div class="pane pane-chrome">
+                                            <p class="muted">
+                                                Chrome, Edge, Brave, Opera,
+                                                Vivaldi, Arc — all use the same
+                                                DevTools layout.
+                                            </p>
+                                            <ol>
+                                                <li>
+                                                    Open
+                                                    <a
+                                                        href="https://soundcloud.com"
+                                                        target="_blank"
+                                                        rel="noopener"
+                                                        >soundcloud.com</a
+                                                    >
+                                                    in that browser and confirm
+                                                    you're signed in.
+                                                </li>
+                                                <li>
+                                                    Press <kbd>F12</kbd> (or
+                                                    right-click →
+                                                    <strong>Inspect</strong>).
+                                                </li>
+                                                <li>
+                                                    Open the
+                                                    <strong>Application</strong>
+                                                    tab. If you don't see it,
+                                                    click
+                                                    <kbd>»</kbd> at the end of
+                                                    the tab strip.
+                                                </li>
+                                                <li>
+                                                    In the left sidebar:
+                                                    <strong>Storage</strong> →
+                                                    <strong>Cookies</strong> →
+                                                    <code
+                                                        >https://soundcloud.com</code
+                                                    >.
+                                                </li>
+                                                <li>
+                                                    Find the row whose
+                                                    <strong>Name</strong> is
+                                                    <code>oauth_token</code>.
+                                                    Double-click its
+                                                    <strong>Value</strong> cell,
+                                                    <kbd>Ctrl</kbd>+<kbd>C</kbd>
+                                                    to copy.
+                                                </li>
+                                                <li>
+                                                    Paste it above and hit
+                                                    <strong>Save token</strong>.
+                                                </li>
+                                            </ol>
+                                        </div>
+                                        <div class="pane pane-firefox">
+                                            <ol>
+                                                <li>
+                                                    Open
+                                                    <a
+                                                        href="https://soundcloud.com"
+                                                        target="_blank"
+                                                        rel="noopener"
+                                                        >soundcloud.com</a
+                                                    >
+                                                    in Firefox and confirm
+                                                    you're signed in.
+                                                </li>
+                                                <li>
+                                                    Press <kbd>F12</kbd> (or
+                                                    right-click →
+                                                    <strong>Inspect</strong>).
+                                                </li>
+                                                <li>
+                                                    Click the
+                                                    <strong>Storage</strong>
+                                                    tab. (May be hidden under
+                                                    <kbd>»</kbd> on narrow
+                                                    windows.)
+                                                </li>
+                                                <li>
+                                                    Expand
+                                                    <strong>Cookies</strong> →
+                                                    <code
+                                                        >https://soundcloud.com</code
+                                                    >.
+                                                </li>
+                                                <li>
+                                                    Click the row named
+                                                    <code>oauth_token</code>.
+                                                    The full value appears in
+                                                    the panel on the right —
+                                                    right-click →
+                                                    <strong>Copy</strong>.
+                                                </li>
+                                                <li>
+                                                    Paste it above and hit
+                                                    <strong>Save token</strong>.
+                                                </li>
+                                            </ol>
+                                        </div>
+                                        <div class="pane pane-safari">
+                                            <ol>
+                                                <li>
+                                                    First time only: Safari →
+                                                    <strong>Settings</strong> →
+                                                    <strong>Advanced</strong> →
+                                                    tick
+                                                    <em
+                                                        >Show features for web
+                                                        developers</em
+                                                    >.
+                                                </li>
+                                                <li>
+                                                    Open
+                                                    <a
+                                                        href="https://soundcloud.com"
+                                                        target="_blank"
+                                                        rel="noopener"
+                                                        >soundcloud.com</a
+                                                    >
+                                                    and confirm you're signed
+                                                    in.
+                                                </li>
+                                                <li>
+                                                    Press
+                                                    <kbd>⌥</kbd
+                                                    >+<kbd>⌘</kbd>+<kbd>I</kbd>
+                                                    (or
+                                                    <strong>Develop</strong> →
+                                                    <em>Show Web Inspector</em
+                                                    >).
+                                                </li>
+                                                <li>
+                                                    Click the
+                                                    <strong>Storage</strong>
+                                                    tab →
+                                                    <strong>Cookies</strong> →
+                                                    <code>soundcloud.com</code>.
+                                                </li>
+                                                <li>
+                                                    Click the row named
+                                                    <code>oauth_token</code>,
+                                                    copy the
+                                                    <strong>Value</strong>.
+                                                </li>
+                                                <li>
+                                                    Paste it above and hit
+                                                    <strong>Save token</strong>.
+                                                </li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                    <p class="muted">
+                                        The token usually stays valid for weeks
+                                        or months — repeat this only if SC
+                                        starts rejecting it.
+                                    </p>
+                                </details>
+                            </div>
+
+                            <div class="auth-section">
+                                <label
+                                    >YouTube cookies.txt
+                                    <span class="muted"
+                                        >(optional — for the DRM fallback)</span
+                                    >
+                                    <textarea
+                                        id="yt-cookies"
+                                        rows="3"
+                                        spellcheck="false"
+                                        placeholder="# Netscape HTTP Cookie File&#10;.youtube.com  TRUE  /  ..."
+                                    ></textarea>
+                                </label>
+                                <div class="auth-actions">
+                                    <button
+                                        id="save-yt-cookies"
+                                        type="button"
+                                        class="small-btn"
+                                    >
+                                        Save cookies
+                                    </button>
+                                    <button
+                                        id="clear-yt-cookies"
+                                        type="button"
+                                        class="small-btn ghost"
+                                    >
+                                        Clear
+                                    </button>
+                                </div>
+                                <div class="auth-msg" id="yt-msg"></div>
+                                <details class="walkthrough">
+                                    <summary>How to export this</summary>
+                                    <ol>
+                                        <li>
+                                            Install a cookies.txt exporter on
+                                            the browser you're logged into
+                                            YouTube with. Recommended:
+                                            <em>Get cookies.txt LOCALLY</em>
+                                            (Chromium) or
+                                            <em>cookies.txt</em> (Firefox).
+                                        </li>
+                                        <li>
+                                            Open
+                                            <a
+                                                href="https://youtube.com"
+                                                target="_blank"
+                                                rel="noopener"
+                                                >youtube.com</a
+                                            >
+                                            and confirm you're signed in.
+                                        </li>
+                                        <li>
+                                            Click the extension icon → export
+                                            for current site (or
+                                            <em>Copy</em> the Netscape-format
+                                            output).
+                                        </li>
+                                        <li>
+                                            Paste the file contents above and
+                                            hit
+                                            <strong>Save cookies</strong>.
+                                        </li>
+                                    </ol>
+                                    <p class="muted">
+                                        Without this, the YouTube fallback works
+                                        for many tracks but hits the "not a bot"
+                                        wall for the rest.
+                                    </p>
+                                </details>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </div>
         </div>
@@ -1511,12 +1418,13 @@
             // Each form submit creates one of these. They run independently,
             // so parallel downloads just means parallel panels.
             class DownloadPanel {
-                static LOG_MAX_LINES = 200;
                 static REMOVE_DELAY_MS = 1200;
 
                 constructor(url) {
                     this.url = url;
-                    this.files = [];
+                    // track id -> { el, state, token }
+                    this.tracks = new Map();
+                    this.tracksStarted = false;
                     this.streamDone = false;
                     this.hadError = false;
                     this.build();
@@ -1532,15 +1440,15 @@
                             <span class="dl-state info">starting…</span>
                             <button class="dl-close" type="button" title="Dismiss">×</button>
                         </div>
-                        <div class="dl-files" hidden></div>
-                        <pre class="dl-log"></pre>
+                        <div class="dl-note" hidden></div>
+                        <div class="dl-tracks"></div>
                     `;
                     this.element = el;
                     this.dotEl = el.querySelector(".dot");
                     this.titleEl = el.querySelector(".dl-title");
                     this.stateEl = el.querySelector(".dl-state");
-                    this.filesEl = el.querySelector(".dl-files");
-                    this.logEl = el.querySelector(".dl-log");
+                    this.noteEl = el.querySelector(".dl-note");
+                    this.tracksEl = el.querySelector(".dl-tracks");
                     this.closeBtn = el.querySelector(".dl-close");
 
                     // Until the server tells us the resolved track/playlist
@@ -1548,8 +1456,9 @@
                     this.titleEl.textContent = this.urlLabel(this.url);
                     this.titleEl.title = this.url;
 
-                    this.closeBtn.addEventListener("click",
-                        () => this.element.remove());
+                    this.closeBtn.addEventListener("click", () =>
+                        this.element.remove(),
+                    );
 
                     // Newest at the top so the active download stays visible.
                     downloadsEl.prepend(el);
@@ -1558,7 +1467,10 @@
                 urlLabel(url) {
                     try {
                         const u = new URL(url);
-                        return (u.pathname.replace(/^\/+/, "") || u.host) + " (resolving…)";
+                        return (
+                            (u.pathname.replace(/^\/+/, "") || u.host) +
+                            " (resolving…)"
+                        );
                     } catch {
                         return url;
                     }
@@ -1575,35 +1487,42 @@
                     this.dotEl.className = "dot " + kind;
                 }
 
-                appendLine(line) {
-                    this.logEl.appendChild(document.createTextNode(line + "\n"));
-                    while (this.logEl.childNodes.length > DownloadPanel.LOG_MAX_LINES) {
-                        this.logEl.removeChild(this.logEl.firstChild);
-                    }
-                    // The pre auto-scrolls to bottom as new lines arrive.
-                    this.logEl.scrollTop = this.logEl.scrollHeight;
+                showNote(msg) {
+                    this.noteEl.textContent = msg;
+                    this.noteEl.hidden = false;
                 }
 
-                addFile(token, filename) {
-                    const a = document.createElement("a");
-                    a.className = "file-btn";
-                    a.href = "api/file/" + encodeURIComponent(token);
-                    a.download = filename;
-                    a.textContent = filename;
-                    a.addEventListener("click", () => {
-                        // Server deletes the file once served; mark consumed
-                        // so a re-click can't 404, then re-check if the panel
-                        // can self-dismiss.
-                        setTimeout(() => {
-                            a.classList.add("consumed");
-                            this.maybeAutoRemove();
-                        }, 0);
-                    });
-                    this.filesEl.appendChild(a);
-                    this.filesEl.hidden = false;
-                    this.files.push(a);
-                    // Auto-trigger the actual download.
-                    a.click();
+                // Create or update a track's pill. state: sc | yt | failed | done.
+                upsertTrack(id, name, state) {
+                    let rec = this.tracks.get(id);
+                    if (!rec) {
+                        const a = document.createElement("a");
+                        a.className = "dl-track";
+                        this.tracksEl.appendChild(a);
+                        rec = { el: a, state: null, token: null };
+                        this.tracks.set(id, rec);
+                    }
+                    if (name) {
+                        rec.el.textContent = name;
+                        rec.el.title = name;
+                    }
+                    rec.state = state;
+                    rec.el.className = "dl-track " + state;
+                    this.tracksStarted = true;
+                }
+
+                // Server saved a file for this track: wire up the download link
+                // (the green pill) and fire it automatically.
+                saveFile(id, token, filename) {
+                    let rec = this.tracks.get(id);
+                    if (!rec) {
+                        this.upsertTrack(id, filename, "done");
+                        rec = this.tracks.get(id);
+                    }
+                    rec.token = token;
+                    rec.el.href = "api/file/" + encodeURIComponent(token);
+                    rec.el.download = filename;
+                    rec.el.click();
                 }
 
                 handleEvent(ev) {
@@ -1611,50 +1530,62 @@
                         this.setTitle(ev.title);
                         return;
                     }
-                    if (ev.type === "log" || ev.type === "info") {
-                        this.appendLine(ev.msg);
+                    if (ev.type === "track") {
+                        this.upsertTrack(ev.id, ev.name, ev.state);
                         this.setState("running…", "info");
                         return;
                     }
                     if (ev.type === "saved") {
-                        this.addFile(ev.token, ev.filename);
+                        this.saveFile(ev.id, ev.token, ev.filename);
                         return;
                     }
                     if (ev.type === "done") {
-                        this.streamDone = true;
-                        if (!this.hadError) {
-                            this.appendLine("-- done --");
-                            this.setState("done", "done");
-                        } else if (this.files.length) {
-                            // Some tracks saved, some errored — common for
-                            // playlists with a mix of DRM and clear tracks.
-                            this.appendLine("-- partial (some tracks failed) --");
-                            this.setState("partial", "partial");
-                            this.closeBtn.classList.add("attn-partial");
-                        } else {
-                            this.appendLine("-- failed --");
-                            this.setState("failed", "error");
-                            this.closeBtn.classList.add("attn-failed");
-                        }
-                        this.maybeAutoRemove();
+                        this.finalize();
                         return;
                     }
                     if (ev.type === "error") {
-                        this.appendLine("-- error: " + ev.msg + " --");
-                        this.setState("error", "error");
-                        this.hadError = true;
+                        // Per-track failures already show as red pills; only
+                        // surface stream-level errors (before any track) here.
+                        if (!this.tracksStarted) {
+                            this.showNote(ev.msg);
+                            this.setState("error", "error");
+                            this.hadError = true;
+                        }
                         return;
                     }
+                    // log / info events are intentionally ignored — the pills
+                    // are the whole UI now.
+                }
+
+                finalize() {
+                    this.streamDone = true;
+                    const states = [...this.tracks.values()].map(
+                        (r) => r.state,
+                    );
+                    const done = states.filter((s) => s === "done").length;
+                    if (states.length && done === states.length) {
+                        this.setState("done", "done");
+                    } else if (done > 0) {
+                        this.setState(
+                            `partial ${done}/${states.length}`,
+                            "partial",
+                        );
+                        this.closeBtn.classList.add("attn-partial");
+                    } else {
+                        this.setState("failed", "error");
+                        this.closeBtn.classList.add("attn-failed");
+                    }
+                    this.maybeAutoRemove();
                 }
 
                 maybeAutoRemove() {
-                    // Dismiss the panel only when everything succeeded AND the
-                    // user has actually pulled every file. Errors stay on
-                    // screen until the user closes them with the × button.
-                    if (!this.streamDone || this.hadError) return;
-                    if (!this.files.length) return;
-                    if (!this.files.every((a) =>
-                        a.classList.contains("consumed"))) return;
+                    // Auto-dismiss only once every track has finished green.
+                    if (!this.streamDone) return;
+                    const states = [...this.tracks.values()].map(
+                        (r) => r.state,
+                    );
+                    if (!states.length) return;
+                    if (!states.every((s) => s === "done")) return;
                     setTimeout(
                         () => this.element.remove(),
                         DownloadPanel.REMOVE_DELAY_MS,
@@ -1670,7 +1601,7 @@
                         });
                         if (!resp.ok) {
                             this.setState("http " + resp.status, "error");
-                            this.appendLine(await resp.text());
+                            this.showNote(await resp.text());
                             this.hadError = true;
                             this.streamDone = true;
                             return;
@@ -1678,7 +1609,7 @@
                         await this.consumeStream(resp.body.getReader());
                     } catch (err) {
                         this.setState("network error", "error");
-                        this.appendLine(String(err));
+                        this.showNote(String(err));
                         this.hadError = true;
                         this.streamDone = true;
                     }
@@ -1776,7 +1707,7 @@
                             "ok",
                         );
                         refreshAuth();
-                        // Collapse the panel so the form below takes focus.
+                        // Collapse Configure again now the token's saved.
                         // Slight delay so the success message is visible first.
                         setTimeout(() => {
                             authPanelEl.open = false;
