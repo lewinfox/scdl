@@ -18,6 +18,7 @@ import secrets as secretslib
 import shutil
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -60,6 +61,16 @@ COOKIE_SECURE = bool(os.environ.get("FLY_APP_NAME"))
 TRUSTED_IPS = {"170.64.251.115"}
 # Endpoints reachable without a session; everything else requires auth.
 PUBLIC_PATHS = {"/login", "/api/login", "/api/ping"}
+
+# Login throttling. A fixed-capacity LRU of recent IPs acts as a ring buffer:
+# once it's full the least-recently-seen IP is evicted. LOGIN_FAIL_LIMIT wrong
+# guesses from one IP trip a LOGIN_BLOCK_SECONDS lockout. Best-effort only —
+# in-memory, per-process, and an attacker rotating IPs can churn the buffer.
+LOGIN_FAIL_LIMIT = 3
+LOGIN_BLOCK_SECONDS = 15 * 60
+LOGIN_TRACKER_SIZE = 1024
+# ip -> [fail_count, blocked_until_epoch]
+_login_attempts: "OrderedDict[str, list]" = OrderedDict()
 
 if APP_PASSWORD is None:
     print("WARNING: SCDL_PASSWORD is not set — the app is UNAUTHENTICATED "
@@ -117,6 +128,37 @@ def _is_authed(request: Request) -> bool:
     return _session_valid(request.cookies.get(SESSION_COOKIE))
 
 
+def _login_block_remaining(ip: str) -> int:
+    """Seconds left on an active lockout for this IP, or 0 if not blocked."""
+    rec = _login_attempts.get(ip)
+    if not rec:
+        return 0
+    remaining = int(rec[1] - time.time())
+    return remaining if remaining > 0 else 0
+
+
+def _record_login_failure(ip: str) -> int:
+    """Tally a failed attempt and return the lockout seconds if the limit is
+    now hit (0 otherwise). Maintains the ring buffer as a most-recent LRU."""
+    now = time.time()
+    rec = _login_attempts.get(ip)
+    if rec is None or (rec[1] and rec[1] <= now):
+        # New IP, or a previous block that has since expired: start fresh.
+        rec = [0, 0.0]
+    rec[0] += 1
+    if rec[0] >= LOGIN_FAIL_LIMIT:
+        rec[1] = now + LOGIN_BLOCK_SECONDS
+    _login_attempts[ip] = rec
+    _login_attempts.move_to_end(ip)
+    while len(_login_attempts) > LOGIN_TRACKER_SIZE:
+        _login_attempts.popitem(last=False)  # evict least-recently-seen IP
+    return _login_block_remaining(ip)
+
+
+def _clear_login_failures(ip: str) -> None:
+    _login_attempts.pop(ip, None)
+
+
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
     if request.url.path in PUBLIC_PATHS or _is_authed(request):
@@ -141,11 +183,26 @@ async def login_page(request: Request):
 
 
 @app.post("/api/login")
-async def do_login(req: LoginRequest):
+async def do_login(req: LoginRequest, request: Request):
     if APP_PASSWORD is None:
         raise HTTPException(503, "no password configured on the server")
+
+    ip = _client_ip(request)
+    blocked = _login_block_remaining(ip)
+    if blocked:
+        mins = max(1, round(blocked / 60))
+        raise HTTPException(429, f"too many attempts — try again in ~{mins} min",
+                            headers={"Retry-After": str(blocked)})
+
     if not hmac.compare_digest(req.password, APP_PASSWORD):
+        blocked = _record_login_failure(ip)
+        if blocked:
+            mins = max(1, round(blocked / 60))
+            raise HTTPException(429, f"too many attempts — locked out for ~{mins} min",
+                                headers={"Retry-After": str(blocked)})
         raise HTTPException(401, "incorrect password")
+
+    _clear_login_failures(ip)
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         SESSION_COOKIE,
