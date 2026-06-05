@@ -38,6 +38,11 @@ app = FastAPI()
 DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
+# Spotify's audio is DRM-encrypted and never downloadable via a cookie/token —
+# we use these endpoints only to read track/playlist *metadata*, then hand the
+# artist/title to the existing YouTube fallback for the actual audio.
+SPOTIFY_API = "https://api.spotify.com/v1"
+SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 
 # How many playlist tracks to download at once. Most SC tracks are progressive
 # MP3 (network-bound direct copies), so parallelism is a clear win; the cap keeps
@@ -51,6 +56,10 @@ except ValueError:
 # Overridable via SCDL_DATA_DIR — in Docker this points at a mounted volume.
 DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "data"))
 SC_TOKEN_PATH = DATA_DIR / "sc_token"
+# Spotify Web API "Client Credentials": a client_id + client_secret from a free
+# developer app, stored as "id:secret". Exchanged for a short-lived bearer token
+# at request time; only ever used for public metadata, never for audio.
+SPOTIFY_CREDS_PATH = DATA_DIR / "spotify_creds"
 YT_COOKIES_PATH = DATA_DIR / "yt-cookies.txt"
 
 # --- Auth ----------------------------------------------------------------
@@ -242,6 +251,79 @@ def _read_sc_token() -> Optional[str]:
         return None
 
 
+def _read_spotify_creds() -> Optional[tuple[str, str]]:
+    """Return (client_id, client_secret) from the stored 'id:secret' file, or
+    None if it's missing or malformed."""
+    try:
+        raw = SPOTIFY_CREDS_PATH.read_text().strip()
+    except FileNotFoundError:
+        return None
+    cid, sep, secret = raw.partition(":")
+    cid, secret = cid.strip(), secret.strip()
+    if not sep or not cid or not secret:
+        return None
+    return cid, secret
+
+
+class SpotifyError(RuntimeError):
+    """Raised for Spotify auth/credential problems so callers can surface a
+    clean message — both the HTTP endpoint and the SSE stream catch it."""
+
+
+# open.spotify.com URLs may carry a locale prefix (e.g. /intl-de/track/...);
+# spotify: URIs are accepted too. We only handle tracks and playlists.
+_SPOTIFY_URL_RE = re.compile(
+    r"open\.spotify\.com/(?:intl-[a-z]{2}/)?(track|playlist)/([A-Za-z0-9]+)")
+_SPOTIFY_URI_RE = re.compile(r"spotify:(track|playlist):([A-Za-z0-9]+)")
+
+
+def parse_spotify_url(url: str) -> Optional[tuple[str, str]]:
+    """Return (kind, id) for a Spotify track/playlist URL or URI, else None."""
+    m = _SPOTIFY_URL_RE.search(url) or _SPOTIFY_URI_RE.search(url)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+async def _spotify_access_token(client, client_id: str, client_secret: str) -> str:
+    """Exchange client credentials for a short-lived bearer token. Raises
+    SpotifyError with a user-facing message when Spotify rejects the creds."""
+    import base64
+
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    try:
+        r = await client.post(
+            SPOTIFY_TOKEN_URL,
+            data={"grant_type": "client_credentials"},
+            headers={"Authorization": f"Basic {basic}"},
+        )
+    except Exception as e:
+        raise SpotifyError(f"could not reach Spotify accounts service: {e}")
+    if r.status_code in (400, 401):
+        # invalid_client / invalid_grant — almost always a bad id/secret.
+        raise SpotifyError("Spotify rejected these credentials — double-check the "
+                           "client ID and secret from your developer dashboard")
+    if r.status_code != 200:
+        raise SpotifyError(f"Spotify token endpoint returned HTTP {r.status_code}")
+    tok = (r.json() or {}).get("access_token")
+    if not tok:
+        raise SpotifyError("Spotify returned no access_token")
+    return tok
+
+
+def _spotify_entry(track: Optional[dict]) -> Optional[tuple[str, str]]:
+    """Pull (artist, title) out of a Spotify track object, or None if the entry
+    isn't a usable track (removed items and podcast episodes come back here)."""
+    if not track or track.get("type") not in (None, "track"):
+        return None
+    title = track.get("name")
+    if not title:
+        return None
+    artists = ", ".join(a.get("name", "") for a in (track.get("artists") or [])
+                        if a.get("name")) or "unknown"
+    return artists, title
+
+
 def _write_secret(path: Path, content: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
@@ -312,10 +394,13 @@ async def start_download(req: DownloadRequest):
     url_changed = cleaned != req.url
     req = req.model_copy(update={"url": cleaned})
 
-    return StreamingResponse(
-        stream_direct_api(req, output_dir, url_changed),
-        media_type="text/event-stream",
-    )
+    spotify = parse_spotify_url(cleaned)
+    if spotify:
+        stream = stream_spotify(req, spotify, output_dir, url_changed)
+    else:
+        stream = stream_direct_api(req, output_dir, url_changed)
+
+    return StreamingResponse(stream, media_type="text/event-stream")
 
 
 async def _hydrate_track(client, client_id: str, stub: dict) -> Optional[dict]:
@@ -476,6 +561,153 @@ async def stream_direct_api(
             signal_task.cancel()
 
         yield sse({"type": "done", "msg": "complete"})
+
+
+async def _fetch_spotify_entries(
+    client, headers: dict, kind: str, sid: str,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Resolve a Spotify track/playlist to a display title and a list of
+    (artist, title) pairs. Playlists are paginated via Spotify's `next` cursor."""
+    if kind == "track":
+        r = await client.get(f"{SPOTIFY_API}/tracks/{sid}", headers=headers)
+        r.raise_for_status()
+        tr = r.json()
+        entry = _spotify_entry(tr)
+        if entry is None:
+            raise SpotifyError("Spotify returned no playable track for that URL")
+        return f"{entry[0]} — {entry[1]}", [entry]
+
+    # Playlist: first page (with name) then follow `next` until exhausted.
+    r = await client.get(f"{SPOTIFY_API}/playlists/{sid}", headers=headers,
+                         params={"additional_types": "track"})
+    r.raise_for_status()
+    data = r.json()
+    p_title = data.get("name") or "playlist"
+    page = data.get("tracks") or {}
+    items = list(page.get("items") or [])
+    next_url = page.get("next")
+    while next_url:
+        r = await client.get(next_url, headers=headers)
+        r.raise_for_status()
+        page = r.json()
+        items.extend(page.get("items") or [])
+        next_url = page.get("next")
+
+    entries: list[tuple[str, str]] = []
+    for it in items:
+        entry = _spotify_entry((it or {}).get("track"))
+        if entry is not None:
+            entries.append(entry)
+    return f"Playlist: {p_title}", entries
+
+
+async def _process_spotify_track(
+    artist: str, title: str, output_dir: Path, idx: int, total: int,
+) -> AsyncGenerator[str, None]:
+    """A Spotify track has no downloadable audio, so it goes straight to the
+    YouTube fallback — the card shows yellow (yt) then green/red."""
+    label = f"[{idx}/{total}]" if total > 1 else ""
+    name = f"{artist} — {title}"
+    yield _track_event(idx, total, name, "yt")
+    status = {"ok": False}
+    async for ev in _youtube_fallback(artist, title, output_dir, label, idx, status):
+        yield ev
+    yield _track_event(idx, total, name, "done" if status["ok"] else "failed")
+
+
+async def stream_spotify(
+    req: DownloadRequest, resource: tuple[str, str], output_dir: Path,
+    url_changed: bool,
+) -> AsyncGenerator[str, None]:
+    """Spotify backend: read stored client credentials, resolve the track or
+    playlist to metadata, then fetch each track's audio from YouTube. Spotify
+    audio itself is DRM-locked and never downloaded directly."""
+    import httpx
+
+    if url_changed:
+        yield sse({"type": "info", "msg": f"stripped query params -> {req.url}"})
+    yield sse({"type": "info", "msg": f"saving to: {output_dir}"})
+
+    creds = _read_spotify_creds()
+    if not creds:
+        yield sse({"type": "error",
+                   "msg": "no Spotify credentials configured — add a client ID and "
+                          "secret in the Configure panel above"})
+        return
+    client_id, client_secret = creds
+    kind, sid = resource
+
+    yield sse({"type": "info",
+               "msg": "Spotify audio is DRM-locked — reading metadata only, audio "
+                      "comes from the YouTube fallback"})
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        try:
+            token = await _spotify_access_token(client, client_id, client_secret)
+        except SpotifyError as e:
+            yield sse({"type": "error", "msg": str(e)})
+            return
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            title, entries = await _fetch_spotify_entries(client, headers, kind, sid)
+        except SpotifyError as e:
+            yield sse({"type": "error", "msg": str(e)})
+            return
+        except Exception as e:
+            yield sse({"type": "error", "msg": f"Spotify resolve failed: {e}"})
+            return
+
+        if kind == "playlist":
+            yield sse({"type": "title",
+                       "title": f"{title} ({len(entries)} tracks)"})
+            yield sse({"type": "info",
+                       "msg": f"{title}: {len(entries)} tracks"})
+        else:
+            yield sse({"type": "title", "title": title})
+
+        if not entries:
+            yield sse({"type": "error", "msg": "no playable tracks found"})
+            yield sse({"type": "done", "msg": "complete"})
+            return
+
+    # Reuse the bounded-concurrency, queue-multiplexed pattern from the SC path:
+    # each track runs in its own worker and streams events back through a queue.
+    total = len(entries)
+    queue: asyncio.Queue = asyncio.Queue()
+    sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+
+    async def _run_track(i: int, artist: str, t_title: str) -> None:
+        label = f"[{i}/{total}]" if total > 1 else ""
+        async with sem:
+            try:
+                async for ev in _process_spotify_track(artist, t_title, output_dir, i, total):
+                    await queue.put(ev)
+            except Exception as e:
+                await queue.put(sse({"type": "info",
+                                     "msg": f"{label} unexpected error, skipping: {e}"}))
+                await queue.put(_track_event(i, total, f"{artist} — {t_title}", "failed"))
+
+    tasks = [asyncio.create_task(_run_track(i, a, t))
+             for i, (a, t) in enumerate(entries, 1)]
+
+    async def _signal_done() -> None:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await queue.put(None)
+
+    signal_task = asyncio.create_task(_signal_done())
+    try:
+        while True:
+            ev = await queue.get()
+            if ev is None:
+                break
+            yield ev
+    finally:
+        for tsk in tasks:
+            tsk.cancel()
+        signal_task.cancel()
+
+    yield sse({"type": "done", "msg": "complete"})
 
 
 async def _download_track(
@@ -720,13 +952,21 @@ class YTAuthRequest(BaseModel):
     cookies: str
 
 
+class SpotifyAuthRequest(BaseModel):
+    client_id: str
+    client_secret: str
+
+
 @app.get("/api/auth")
 async def auth_status() -> dict:
     tok = _read_sc_token()
+    sp = _read_spotify_creds()
     return {
         "sc_token_set": tok is not None,
         "sc_token_hint": f"…{tok[-6:]}" if tok else None,
         "yt_cookies_set": YT_COOKIES_PATH.exists(),
+        "spotify_set": sp is not None,
+        "spotify_hint": f"…{sp[0][-6:]}" if sp else None,
     }
 
 
@@ -769,6 +1009,33 @@ async def save_sc_token(req: SCAuthRequest) -> dict:
 @app.delete("/api/auth/sc")
 async def clear_sc_token() -> dict:
     SC_TOKEN_PATH.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/auth/spotify")
+async def save_spotify_creds(req: SpotifyAuthRequest) -> dict:
+    """Validate the client_id/secret by actually fetching a token before
+    persisting them, so a typo is caught at paste time rather than mid-download."""
+    import httpx
+
+    client_id = req.client_id.strip()
+    client_secret = req.client_secret.strip()
+    if not client_id or not client_secret:
+        raise HTTPException(400, "client ID and secret are both required")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        try:
+            await _spotify_access_token(client, client_id, client_secret)
+        except SpotifyError as e:
+            raise HTTPException(401, str(e))
+
+    _write_secret(SPOTIFY_CREDS_PATH, f"{client_id}:{client_secret}")
+    return {"ok": True}
+
+
+@app.delete("/api/auth/spotify")
+async def clear_spotify_creds() -> dict:
+    SPOTIFY_CREDS_PATH.unlink(missing_ok=True)
     return {"ok": True}
 
 

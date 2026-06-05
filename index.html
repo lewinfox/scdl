@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>SoundCloud Downloader</title>
+        <title>SoundCloud &amp; Spotify Downloader</title>
         <style>
             :root {
                 color-scheme: dark;
@@ -1069,7 +1069,7 @@
             <header>
                 <div class="title-row">
                     <div>
-                        <h1>SoundCloud Downloader</h1>
+                        <h1>SoundCloud &amp; Spotify Downloader</h1>
                         <div class="tag">Gwan you good thing</div>
                     </div>
                     <div class="server-status" id="server-status">
@@ -1083,13 +1083,13 @@
                 <div class="col">
                     <form id="f" class="panel">
                         <label
-                            >SoundCloud URL
+                            >SoundCloud or Spotify URL
                             <input
                                 id="url"
                                 type="url"
                                 required
                                 autocomplete="off"
-                                placeholder="https://soundcloud.com/you/your-track"
+                                placeholder="soundcloud.com/… or open.spotify.com/…"
                             />
                         </label>
                         <button id="go" type="submit">Download</button>
@@ -1321,6 +1321,95 @@
                                         The token usually stays valid for weeks
                                         or months — repeat this only if SC
                                         starts rejecting it.
+                                    </p>
+                                </details>
+                            </div>
+
+                            <div class="auth-section">
+                                <label
+                                    >Spotify client ID
+                                    <span class="muted"
+                                        >(for Spotify track/playlist
+                                        links)</span
+                                    >
+                                    <input
+                                        id="sp-id"
+                                        type="text"
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                        placeholder="from your Spotify developer app"
+                                    />
+                                </label>
+                                <label
+                                    >Spotify client secret
+                                    <input
+                                        id="sp-secret"
+                                        type="password"
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                        placeholder="from your Spotify developer app"
+                                    />
+                                </label>
+                                <div class="auth-actions">
+                                    <button
+                                        id="save-sp-creds"
+                                        type="button"
+                                        class="small-btn"
+                                    >
+                                        Save credentials
+                                    </button>
+                                    <button
+                                        id="clear-sp-creds"
+                                        type="button"
+                                        class="small-btn ghost"
+                                    >
+                                        Clear
+                                    </button>
+                                </div>
+                                <div class="auth-msg" id="sp-msg"></div>
+                                <details class="walkthrough">
+                                    <summary>
+                                        Why credentials, not a cookie?
+                                    </summary>
+                                    <p class="muted">
+                                        Spotify's audio is DRM-encrypted, so
+                                        unlike SoundCloud there's no cookie that
+                                        unlocks a downloadable file. We use the
+                                        Spotify API purely to read the track or
+                                        playlist's artist/title, then fetch the
+                                        actual audio from YouTube (same fallback
+                                        used for DRM-locked SoundCloud tracks).
+                                    </p>
+                                    <ol>
+                                        <li>
+                                            Go to
+                                            <a
+                                                href="https://developer.spotify.com/dashboard"
+                                                target="_blank"
+                                                rel="noopener"
+                                                >developer.spotify.com/dashboard</a
+                                            >
+                                            and log in.
+                                        </li>
+                                        <li>
+                                            Click <em>Create app</em>. Give it
+                                            any name and description; set the
+                                            redirect URI to anything (e.g.
+                                            <code>http://localhost</code>) — it's
+                                            unused here.
+                                        </li>
+                                        <li>
+                                            Open the app's
+                                            <em>Settings</em> and copy the
+                                            <code>Client ID</code> and
+                                            <code>Client secret</code> into the
+                                            fields above.
+                                        </li>
+                                    </ol>
+                                    <p class="muted">
+                                        These read public catalogue metadata
+                                        only — no access to your account or
+                                        private playlists.
                                     </p>
                                 </details>
                             </div>
@@ -1655,6 +1744,9 @@
             const authStatusEl = document.getElementById("auth-status");
             const scTokenEl = document.getElementById("sc-token");
             const scMsgEl = document.getElementById("sc-msg");
+            const spIdEl = document.getElementById("sp-id");
+            const spSecretEl = document.getElementById("sp-secret");
+            const spMsgEl = document.getElementById("sp-msg");
             const ytCookiesEl = document.getElementById("yt-cookies");
             const ytMsgEl = document.getElementById("yt-msg");
 
@@ -1671,10 +1763,13 @@
                     const scBadge = a.sc_token_set
                         ? `<span class="badge ok">✓ SC token ${a.sc_token_hint}</span>`
                         : `<span class="badge warn">⚠ no SC token</span>`;
+                    const spBadge = a.spotify_set
+                        ? `<span class="badge ok">✓ Spotify ${a.spotify_hint}</span>`
+                        : `<span class="badge dim">no Spotify creds</span>`;
                     const ytBadge = a.yt_cookies_set
                         ? `<span class="badge ok">✓ YT cookies</span>`
                         : `<span class="badge dim">no YT cookies</span>`;
-                    authStatusEl.innerHTML = scBadge + ytBadge;
+                    authStatusEl.innerHTML = scBadge + spBadge + ytBadge;
                     if (!authInitialised) {
                         authInitialised = true;
                         authPanelEl.open = !a.sc_token_set;
@@ -1738,6 +1833,50 @@
                 .addEventListener("click", async () => {
                     await fetch("api/auth/sc", { method: "DELETE" });
                     setMsg(scMsgEl, "cleared", "");
+                    refreshAuth();
+                });
+
+            document
+                .getElementById("save-sp-creds")
+                .addEventListener("click", async () => {
+                    const clientId = spIdEl.value.trim();
+                    const clientSecret = spSecretEl.value.trim();
+                    if (!clientId || !clientSecret) {
+                        setMsg(spMsgEl, "enter both ID and secret", "err");
+                        return;
+                    }
+                    setMsg(spMsgEl, "validating with Spotify…", "");
+                    try {
+                        const r = await fetch("api/auth/spotify", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                client_id: clientId,
+                                client_secret: clientSecret,
+                            }),
+                        });
+                        const data = await r.json().catch(() => ({}));
+                        if (!r.ok) {
+                            setMsg(
+                                spMsgEl,
+                                data.detail || "save failed",
+                                "err",
+                            );
+                            return;
+                        }
+                        spSecretEl.value = "";
+                        setMsg(spMsgEl, "✓ credentials saved", "ok");
+                        refreshAuth();
+                    } catch (err) {
+                        setMsg(spMsgEl, String(err), "err");
+                    }
+                });
+
+            document
+                .getElementById("clear-sp-creds")
+                .addEventListener("click", async () => {
+                    await fetch("api/auth/spotify", { method: "DELETE" });
+                    setMsg(spMsgEl, "cleared", "");
                     refreshAuth();
                 });
 

@@ -1,9 +1,18 @@
-# scdl — SoundCloud Archiver
+# scdl — SoundCloud & Spotify Archiver
 
-Tiny self-hosted web app for grabbing SoundCloud tracks as MP3. DRM-locked
-tracks transparently fall back to a YouTube search via `yt-dlp`. A glowing
-"Download" button lights up when each file is ready; clicking it streams the
-file to your browser and deletes it from the server.
+Tiny self-hosted web app for grabbing SoundCloud and Spotify tracks/playlists
+as MP3. DRM-locked tracks transparently fall back to a YouTube search via
+`yt-dlp`. A glowing "Download" button lights up when each file is ready;
+clicking it streams the file to your browser and deletes it from the server.
+
+Paste a `soundcloud.com/…` or `open.spotify.com/…` link and the app figures
+out which backend to use.
+
+> **Note on Spotify:** Spotify's audio is DRM-encrypted, so — unlike
+> SoundCloud — there's no cookie that unlocks a downloadable file. The app
+> uses the Spotify API purely to read each track/playlist's artist and title,
+> then fetches the actual audio from YouTube (the same fallback used for
+> DRM-locked SoundCloud tracks). Quality is whatever YouTube has.
 
 ## Deploying via Docker Compose
 
@@ -61,6 +70,12 @@ Open `http://<host>:8765`. The **Auth** panel walks you through:
   browser. The server validates it against SoundCloud's `/me` and shows the
   username so you know you copied the right cell. Per-browser steps are
   inside the panel (Chromium / Firefox / Safari).
+- **Spotify client ID + secret** (only needed for Spotify links) — create a
+  free app at
+  [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+  and paste the Client ID and Client secret. These read public catalogue
+  metadata only (Client Credentials flow) — no account access, no private
+  playlists. The server validates them by fetching a token before saving.
 - **YouTube cookies.txt** (optional) — paste a Netscape-format export if you
   want the DRM fallback to dodge YouTube's bot challenge. Otherwise the
   fallback works for many tracks but not all.
