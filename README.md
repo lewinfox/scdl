@@ -25,12 +25,17 @@ services:
       - "8765:8765"
     environment:
       - SCDL_DATA_DIR=/data
+      # Credentials are read from the environment, not the UI. Supply the
+      # SoundCloud oauth_token, and optionally a Netscape cookies.txt for the
+      # YouTube fallback. Keep these out of the compose file in practice — use
+      # an .env file or your orchestrator's secret store.
+      - SCDL_SC_TOKEN=${SCDL_SC_TOKEN}
+      - SCDL_YT_COOKIES=${SCDL_YT_COOKIES}
     volumes:
       # Staging dir for in-flight downloads. Files are deleted from disk once
       # the browser fetches them, so this mostly stays empty.
       - ./downloads:/app/downloads
-      # Persistent auth: SC oauth_token + (optional) YouTube cookies.txt.
-      # Set via the in-app Auth panel.
+      # Session secret for the login gate. Credentials no longer live here.
       - scdl-data:/data
     restart: unless-stopped
 
@@ -53,21 +58,26 @@ echo "$GHCR_PAT" | docker login ghcr.io -u <user> --password-stdin
 Or flip the package to public from its Settings page on GitHub if you'd
 rather not bother with login.
 
-## First-time auth
+## Credentials
 
-Open `http://<host>:8765`. The **Auth** panel walks you through:
+Both credentials are read from environment variables — there's no in-app
+configuration. On Fly, set them as secrets:
 
-- **SoundCloud oauth_token** — paste the cookie value from your logged-in
-  browser. The server validates it against SoundCloud's `/me` and shows the
-  username so you know you copied the right cell. Per-browser steps are
-  inside the panel (Chromium / Firefox / Safari).
-- **YouTube cookies.txt** (optional) — paste a Netscape-format export if you
-  want the DRM fallback to dodge YouTube's bot challenge. Otherwise the
-  fallback works for many tracks but not all.
+```sh
+flyctl secrets set SCDL_SC_TOKEN="<oauth_token value>"
+# optional, for the YouTube DRM fallback:
+flyctl secrets set SCDL_YT_COOKIES="$(cat cookies.txt)"
+```
 
-Both are stored under `SCDL_DATA_DIR` (`/data` in the container). The SC
-token typically lasts weeks-to-months; re-paste only when SoundCloud starts
-rejecting it.
+- **`SCDL_SC_TOKEN`** — the `oauth_token` cookie value from a logged-in
+  SoundCloud session. In DevTools: Application → Cookies → `https://soundcloud.com`
+  → copy the **Value** of the `oauth_token` row (not the name). The SC token
+  typically lasts weeks-to-months; re-set the secret only when SoundCloud
+  starts rejecting it.
+- **`SCDL_YT_COOKIES`** (optional) — the full contents of a Netscape-format
+  `cookies.txt` export. With it, the DRM fallback dodges YouTube's bot
+  challenge; without it the fallback works for many tracks but not all. The
+  app spills this to a temp file at startup for `yt-dlp --cookies`.
 
 ## Local dev
 
@@ -87,11 +97,9 @@ docker compose up --build
 
 ## Caveats
 
-- **No auth on the web app itself.** Anyone who can reach `:8765` can save
-  or replace the stored SC token. Fine on a home LAN; if you expose it past
-  that, put it behind a reverse proxy, VPN, or Tailscale.
-- Token + cookies live in plaintext on the volume (`chmod 600` best-effort,
-  silently ignored on some bind-mounted filesystems).
+- Credentials come from the environment (Fly secrets / env vars), so they're
+  never exposed or editable through the UI. The YT cookies are spilled to a
+  `chmod 600` temp file at startup so `yt-dlp` can read them.
 - The image uses `python:3.13-slim` because `bun` (the JS runtime yt-dlp
   needs for YouTube extraction) requires glibc. Don't swap the base for
   Alpine without also swapping the JS runtime.

@@ -16,6 +16,7 @@ import os
 import re
 import secrets as secretslib
 import shutil
+import tempfile
 import time
 import uuid
 from collections import OrderedDict
@@ -47,11 +48,33 @@ try:
 except ValueError:
     DOWNLOAD_CONCURRENCY = 4
 
-# Persistent storage for the SC oauth_token and (optional) YT cookies.txt.
-# Overridable via SCDL_DATA_DIR — in Docker this points at a mounted volume.
+# Persistent storage dir (session secret etc.). Overridable via SCDL_DATA_DIR —
+# in Docker this points at a mounted volume.
 DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "data"))
-SC_TOKEN_PATH = DATA_DIR / "sc_token"
-YT_COOKIES_PATH = DATA_DIR / "yt-cookies.txt"
+
+# Credentials are provided as secrets via the environment (Fly secrets / env
+# vars), never entered or stored through the UI.
+#   SCDL_SC_TOKEN   — SoundCloud oauth_token cookie value
+#   SCDL_YT_COOKIES — optional Netscape cookies.txt contents for the YT fallback
+SC_TOKEN = (os.environ.get("SCDL_SC_TOKEN") or "").strip() or None
+
+
+def _materialize_yt_cookies() -> Optional[Path]:
+    """yt-dlp's --cookies wants a file path, so spill SCDL_YT_COOKIES to a
+    temp file at startup. Returns None when no cookies are configured."""
+    content = os.environ.get("SCDL_YT_COOKIES")
+    if not content or not content.strip():
+        return None
+    path = Path(tempfile.gettempdir()) / "scdl-yt-cookies.txt"
+    path.write_text(content if content.endswith("\n") else content + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+YT_COOKIES_FILE = _materialize_yt_cookies()
 
 # --- Auth ----------------------------------------------------------------
 # A single shared password gates the whole app. The gate is only active when
@@ -235,23 +258,6 @@ async def do_logout() -> JSONResponse:
 _file_tokens: dict[str, Path] = {}
 
 
-def _read_sc_token() -> Optional[str]:
-    try:
-        return SC_TOKEN_PATH.read_text().strip() or None
-    except FileNotFoundError:
-        return None
-
-
-def _write_secret(path: Path, content: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    # chmod is best-effort: some bind-mounted volumes silently ignore it.
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-
-
 class DownloadRequest(BaseModel):
     url: str
     output_dir: Optional[str] = None
@@ -383,7 +389,7 @@ async def _process_track(
 async def stream_direct_api(
     req: DownloadRequest, output_dir: Path, url_changed: bool,
 ) -> AsyncGenerator[str, None]:
-    """Direct SoundCloud API backend: read OAuth token from the stored config,
+    """Direct SoundCloud API backend: read OAuth token from the environment,
     resolve the URL, iterate transcodings until one delivers a working stream URL."""
     import httpx
 
@@ -391,12 +397,12 @@ async def stream_direct_api(
         yield sse({"type": "info", "msg": f"stripped query params -> {req.url}"})
     yield sse({"type": "info", "msg": f"saving to: {output_dir}"})
 
-    token = _read_sc_token()
+    token = SC_TOKEN
     if not token:
         yield sse({"type": "error",
-                   "msg": "no SoundCloud token configured — set one in the Auth panel above"})
+                   "msg": "no SoundCloud token configured — set the SCDL_SC_TOKEN secret"})
         return
-    yield sse({"type": "info", "msg": f"using stored oauth_token (...{token[-6:]})"})
+    yield sse({"type": "info", "msg": f"using configured oauth_token (...{token[-6:]})"})
 
     headers = {
         "Authorization": f"OAuth {token}",
@@ -670,11 +676,11 @@ async def _youtube_fallback(
         "--js-runtimes", "bun",
         "-o", str(out_template),
     ]
-    if YT_COOKIES_PATH.exists():
-        cmd += ["--cookies", str(YT_COOKIES_PATH)]
+    if YT_COOKIES_FILE is not None:
+        cmd += ["--cookies", str(YT_COOKIES_FILE)]
     else:
         yield sse({"type": "info",
-                   "msg": f"{label} YT fallback: no cookies.txt configured — may hit YouTube's bot wall"})
+                   "msg": f"{label} YT fallback: no SCDL_YT_COOKIES configured — may hit YouTube's bot wall"})
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -710,87 +716,6 @@ async def _youtube_fallback(
                        "msg": f"{label} YT fallback: couldn't locate output for download link"})
     else:
         yield sse({"type": "error", "msg": f"{label} YT fallback: yt-dlp exit {rc}"})
-
-
-class SCAuthRequest(BaseModel):
-    token: str
-
-
-class YTAuthRequest(BaseModel):
-    cookies: str
-
-
-@app.get("/api/auth")
-async def auth_status() -> dict:
-    tok = _read_sc_token()
-    return {
-        "sc_token_set": tok is not None,
-        "sc_token_hint": f"…{tok[-6:]}" if tok else None,
-        "yt_cookies_set": YT_COOKIES_PATH.exists(),
-    }
-
-
-@app.post("/api/auth/sc")
-async def save_sc_token(req: SCAuthRequest) -> dict:
-    """Validate the pasted oauth_token against SoundCloud's /me endpoint
-    before persisting it. The returned username gives the user immediate
-    confidence that they pasted the right cookie."""
-    import httpx
-
-    token = req.token.strip()
-    if not token:
-        raise HTTPException(400, "token is empty")
-
-    headers = {
-        "Authorization": f"OAuth {token}",
-        "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
-    }
-    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-        try:
-            client_id = await fetch_client_id(client)
-        except Exception as e:
-            raise HTTPException(502, f"could not get SoundCloud client_id: {e}")
-        try:
-            r = await client.get(f"{SC_API}/me", params={"client_id": client_id})
-        except Exception as e:
-            raise HTTPException(502, f"SoundCloud /me failed: {e}")
-
-    if r.status_code == 401:
-        raise HTTPException(401, "SoundCloud rejected this token — make sure you copied the value, not the name")
-    if r.status_code != 200:
-        raise HTTPException(502, f"SoundCloud /me returned HTTP {r.status_code}")
-
-    me = r.json() or {}
-    _write_secret(SC_TOKEN_PATH, token)
-    return {"username": me.get("username") or me.get("permalink") or "unknown"}
-
-
-@app.delete("/api/auth/sc")
-async def clear_sc_token() -> dict:
-    SC_TOKEN_PATH.unlink(missing_ok=True)
-    return {"ok": True}
-
-
-@app.post("/api/auth/yt")
-async def save_yt_cookies(req: YTAuthRequest) -> dict:
-    content = req.cookies.strip()
-    if not content:
-        raise HTTPException(400, "cookies content is empty")
-    if "# Netscape HTTP Cookie File" not in content.splitlines()[0]:
-        # Soft-validate: yt-dlp will reject bad files anyway, but a heads-up
-        # at paste time saves a confused fallback run later.
-        raise HTTPException(400,
-            "doesn't look like a Netscape cookies.txt — first line should be "
-            "'# Netscape HTTP Cookie File'. Use a cookies.txt exporter extension.")
-    _write_secret(YT_COOKIES_PATH, content + "\n")
-    return {"ok": True}
-
-
-@app.delete("/api/auth/yt")
-async def clear_yt_cookies() -> dict:
-    YT_COOKIES_PATH.unlink(missing_ok=True)
-    return {"ok": True}
 
 
 async def fetch_client_id(client) -> str:
