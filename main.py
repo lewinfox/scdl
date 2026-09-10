@@ -23,9 +23,9 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict, deque
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -78,7 +78,7 @@ _PRESET_KBPS = {
 }
 
 
-def _pretty_preset(preset: Optional[str]) -> str:
+def _pretty_preset(preset: str | None) -> str:
     """Turn a raw preset id into something readable in the UI ('aac_160k' ->
     'AAC 160k'). Unknown presets are shown as-is rather than mangled."""
     if not preset:
@@ -92,7 +92,7 @@ def _pretty_preset(preset: Optional[str]) -> str:
     return preset
 
 
-def _preset_score(preset: Optional[str]) -> int:
+def _preset_score(preset: str | None) -> int:
     """Rank a transcoding preset by rough audio quality, best = highest."""
     if preset in _PRESET_KBPS:
         return _PRESET_KBPS[preset]
@@ -170,7 +170,7 @@ DATA_DIR = Path(os.environ.get("SCDL_DATA_DIR") or (Path(__file__).parent / "dat
 SC_TOKEN = (os.environ.get("SCDL_SC_TOKEN") or "").strip() or None
 
 
-def _materialize_yt_cookies() -> Optional[Path]:
+def _materialize_yt_cookies() -> Path | None:
     """yt-dlp's --cookies wants a file path, so spill SCDL_YT_COOKIES to a
     temp file at startup. Returns None when no cookies are configured."""
     content = os.environ.get("SCDL_YT_COOKIES")
@@ -212,7 +212,7 @@ LOGIN_FAIL_LIMIT = 3
 LOGIN_BLOCK_SECONDS = 15 * 60
 LOGIN_TRACKER_SIZE = 1024
 # ip -> [fail_count, blocked_until_epoch]
-_login_attempts: "OrderedDict[str, list]" = OrderedDict()
+_login_attempts: OrderedDict[str, list] = OrderedDict()
 
 if APP_PASSWORD is None:
     print(
@@ -244,7 +244,7 @@ def _make_session_cookie() -> str:
     return f"{exp}.{sig}"
 
 
-def _session_valid(cookie: Optional[str]) -> bool:
+def _session_valid(cookie: str | None) -> bool:
     if not cookie or "." not in cookie:
         return False
     exp, _, sig = cookie.partition(".")
@@ -280,7 +280,7 @@ def _login_block_remaining(ip: str) -> int:
     if not rec:
         return 0
     remaining = int(rec[1] - time.time())
-    return remaining if remaining > 0 else 0
+    return max(0, remaining)
 
 
 def _record_login_failure(ip: str) -> int:
@@ -382,7 +382,7 @@ _file_tokens: dict[str, Path] = {}
 
 class DownloadRequest(BaseModel):
     url: str
-    output_dir: Optional[str] = None
+    output_dir: str | None = None
 
 
 @app.get("/")
@@ -427,7 +427,7 @@ async def get_file(token: str) -> FileResponse:
     )
 
 
-def _saved_event(path: Path, track_id: Optional[int] = None) -> str:
+def _saved_event(path: Path, track_id: int | None = None) -> str:
     token = uuid.uuid4().hex
     _file_tokens[token] = path
     payload = {"type": "saved", "token": token, "filename": path.name}
@@ -436,7 +436,7 @@ def _saved_event(path: Path, track_id: Optional[int] = None) -> str:
     return sse(payload)
 
 
-def _status_event(track_id: Optional[int], msg: str) -> str:
+def _status_event(track_id: int | None, msg: str) -> str:
     """One-line "what's happening right now" for a track's row in the UI.
 
     Deliberately a curated handful rather than a log feed: the row shows one
@@ -468,7 +468,7 @@ async def start_download(req: DownloadRequest):
     )
 
 
-async def _hydrate_track(client, client_id: str, stub: dict) -> Optional[dict]:
+async def _hydrate_track(client, client_id: str, stub: dict) -> dict | None:
     """Playlist entries past the first few come back as stubs — typically just
     an id, with no media/title/user. Fetch the full track object by id (falling
     back to resolving its permalink_url) so both the SoundCloud download and the
@@ -503,7 +503,7 @@ async def _process_track(
     output_dir: Path,
     idx: int,
     total: int,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Hydrate one (possibly stub) entry, download it from SoundCloud, and fall
     back to YouTube if nothing playable comes back. Yields SSE events, including
     `track` status updates that drive the per-track card in the UI."""
@@ -568,7 +568,7 @@ async def stream_direct_api(
     req: DownloadRequest,
     output_dir: Path,
     url_changed: bool,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Direct SoundCloud API backend: read OAuth token from the environment,
     resolve the URL, iterate transcodings until one delivers a working stream URL."""
     import httpx
@@ -701,10 +701,10 @@ async def _download_track(
     title: str,
     label: str,
     status: dict,
-    track_id: Optional[int] = None,
+    track_id: int | None = None,
     *,
-    meta: Optional[dict] = None,
-) -> AsyncGenerator[str, None]:
+    meta: dict | None = None,
+) -> AsyncGenerator[str]:
     """Attempt each transcoding for a single track until one succeeds."""
     import httpx
 
@@ -1003,7 +1003,7 @@ def _make_output_path(output_dir: Path, user: str, title: str, ext: str) -> Path
     return output_dir / f"[{sanitize_filename(user)}] {sanitize_filename(title)}.{ext}"
 
 
-def _read_yt_path(path_file: Path, output_dir: Path) -> Optional[Path]:
+def _read_yt_path(path_file: Path, output_dir: Path) -> Path | None:
     """Read the real output path yt-dlp wrote to its --print-to-file sidecar.
 
     Beats reconstructing the name ourselves: the download is only linkable if we
@@ -1075,11 +1075,11 @@ def _extract_meta(track: dict) -> dict:
 
 # SoundCloud's artwork_url is a 100x100 "-large.jpg". The -t500x500 variant is
 # 50-120 KB and the right size to embed; -original can be several MB.
-_ART_SIZE_RE = re.compile(r"-(large|t\d+x\d+|original)\.(jpg|png)$", re.I)
+_ART_SIZE_RE = re.compile(r"-(large|t\d+x\d+|original)\.(jpg|png)$", re.IGNORECASE)
 _ART_MAX_BYTES = 2 * 1024 * 1024
 
 
-async def _fetch_artwork(client, url: str) -> Optional[tuple[bytes, str]]:
+async def _fetch_artwork(client, url: str) -> tuple[bytes, str] | None:
     """Fetch cover art as (bytes, mime). Returns None on any failure — artwork
     is a nice-to-have and must never fail a download."""
     if not url:
@@ -1104,7 +1104,7 @@ async def _fetch_artwork(client, url: str) -> Optional[tuple[bytes, str]]:
     return None
 
 
-def _describe_tags(meta: dict, art: Optional[tuple[bytes, str]]) -> str:
+def _describe_tags(meta: dict, art: tuple[bytes, str] | None) -> str:
     """One-line summary of what went into the tags, for the log."""
     parts = [
         f"{k}={meta[k]!r}"
@@ -1122,22 +1122,22 @@ def _describe_tags(meta: dict, art: Optional[tuple[bytes, str]]) -> str:
 
 
 def _write_mp3_tags(
-    path: Path, meta: dict, art: Optional[tuple[bytes, str]] = None
+    path: Path, meta: dict, art: tuple[bytes, str] | None = None
 ) -> None:
     """Write ID3v2.3 tags. Only frames we have a value for are touched, so a
     byte-copied progressive MP3 keeps whatever the uploader already tagged it
     with (BPM and key included)."""
     from mutagen.id3 import (
-        ID3,
-        ID3NoHeaderError,
         APIC,
         COMM,
+        ID3,
         TALB,
         TCON,
         TDRC,
         TIT2,
         TPE1,
         TPE2,
+        ID3NoHeaderError,
     )
 
     try:
@@ -1177,12 +1177,12 @@ async def _youtube_fallback(
     title: str,
     output_dir: Path,
     label: str,
-    track_id: Optional[int] = None,
-    status: Optional[dict] = None,
+    track_id: int | None = None,
+    status: dict | None = None,
     *,
     client=None,
-    meta: Optional[dict] = None,
-) -> AsyncGenerator[str, None]:
+    meta: dict | None = None,
+) -> AsyncGenerator[str]:
     """When SC returns nothing playable, try yt-dlp ytsearch1 against YouTube.
     Output filename is prefixed [YouTube] so the source is unambiguous. Sets
     status["ok"] on success so the caller knows whether a file was produced."""
