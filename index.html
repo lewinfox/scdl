@@ -579,6 +579,79 @@
                 animation: pulse 1.6s ease-in-out infinite;
             }
             /* Shown only for stream-level errors (bad token, resolve failed). */
+            /* YouTube cookie warning. Amber for "act soon", red for "the
+               fallback is already degraded". Styled like the panels — glow
+               outside, wash inside — so it reads as part of the UI rather than
+               a browser alert dropped on top of it. */
+            .yt-banner {
+                --warn: var(--neon-4);
+                --warn-rgb: 249, 248, 113;
+                position: relative;
+                margin-top: 1rem;
+                padding: 0.65rem 0.9rem;
+                border: 1px solid var(--warn);
+                border-radius: 8px;
+                color: var(--warn);
+                font-size: 0.8rem;
+                font-weight: 600;
+                letter-spacing: 0.01em;
+                background:
+                    linear-gradient(
+                        180deg,
+                        rgba(var(--warn-rgb), 0.14),
+                        rgba(var(--warn-rgb), 0.04)
+                    ),
+                    var(--panel);
+                text-shadow: 0 0 8px rgba(var(--warn-rgb), 0.55);
+                box-shadow:
+                    0 0 14px rgba(var(--warn-rgb), 0.3),
+                    0 0 30px rgba(var(--warn-rgb), 0.14),
+                    inset 0 0 18px rgba(var(--warn-rgb), 0.07);
+                animation: banner-in 320ms ease-out both;
+            }
+            /* A slow breathe, so it catches the eye on a page you're not
+               looking directly at without becoming a strobe. */
+            .yt-banner.bad {
+                --warn: var(--bad);
+                --warn-rgb: 255, 77, 109;
+                animation:
+                    banner-in 320ms ease-out both,
+                    banner-throb 2.6s ease-in-out 320ms infinite;
+            }
+            @keyframes banner-in {
+                from {
+                    opacity: 0;
+                    transform: translateY(-4px);
+                }
+                to {
+                    opacity: 1;
+                    transform: none;
+                }
+            }
+            @keyframes banner-throb {
+                0%,
+                100% {
+                    box-shadow:
+                        0 0 14px rgba(var(--warn-rgb), 0.3),
+                        0 0 30px rgba(var(--warn-rgb), 0.14),
+                        inset 0 0 18px rgba(var(--warn-rgb), 0.07);
+                }
+                50% {
+                    box-shadow:
+                        0 0 22px rgba(var(--warn-rgb), 0.5),
+                        0 0 48px rgba(var(--warn-rgb), 0.24),
+                        inset 0 0 24px rgba(var(--warn-rgb), 0.11);
+                }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .yt-banner,
+                .yt-banner.bad {
+                    animation: none;
+                }
+            }
+            .yt-banner[hidden] {
+                display: none;
+            }
             .dl-note {
                 margin-bottom: 0.7rem;
                 padding: 0.5rem 0.75rem;
@@ -877,6 +950,7 @@
                         <span class="ss-label">checking…</span>
                     </div>
                 </div>
+                <div class="yt-banner" id="yt-banner" hidden></div>
             </header>
 
             <div class="grid">
@@ -1103,6 +1177,7 @@
 
                 finalize() {
                     this.streamDone = true;
+                    checkYtCookies();
                     const states = [...this.tracks.values()].map(
                         (r) => r.state,
                     );
@@ -1203,6 +1278,31 @@
             }
             pingServer();
             setInterval(pingServer, 1000);
+
+            // YouTube cookie health. Checked on load and again whenever a
+            // download stream ends, since that's when a rejection surfaces.
+            const ytBanner = document.getElementById("yt-banner");
+            async function checkYtCookies() {
+                let s;
+                try {
+                    const r = await fetch("api/yt-status", { cache: "no-store" });
+                    if (!r.ok) return;
+                    s = await r.json();
+                } catch {
+                    return; // offline: the server-status dot already says so
+                }
+                if (!s.detail || s.state === "ok") {
+                    ytBanner.hidden = true;
+                    return;
+                }
+                ytBanner.textContent = s.detail;
+                ytBanner.classList.toggle(
+                    "bad",
+                    s.state === "expired" || s.state === "rejected",
+                );
+                ytBanner.hidden = false;
+            }
+            checkYtCookies();
         </script>
     </body>
 </html>

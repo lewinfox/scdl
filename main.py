@@ -187,6 +187,73 @@ def _materialize_yt_cookies() -> Path | None:
 
 YT_COOKIES_FILE = _materialize_yt_cookies()
 
+# The cookies that actually carry the YouTube session. If these are gone or
+# past their expiry the jar is useless, whatever else is still in it.
+_YT_AUTH_COOKIES = {"SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO"}
+
+# yt-dlp's phrasing when YouTube rejects the session. Expiry dates are a poor
+# signal on their own — Google invalidates these server-side long before their
+# nominal expiry — so the authoritative answer is what YouTube says when we ask.
+_YT_REJECTED_RE = re.compile(
+    r"sign in to confirm|confirm you're not a bot|please sign in|"
+    r"cookies are no longer valid|account cookies are invalid",
+    re.I,
+)
+
+# Set when YouTube last told us the session was no good. Sticky until the next
+# successful fallback, so the UI can keep warning after the download finishes.
+_yt_rejected_at: Optional[float] = None
+
+
+def _yt_cookie_status() -> dict:
+    """Describe the state of the YouTube cookies for the UI.
+
+    state is one of: missing (none configured), rejected (YouTube turned us
+    away), expired (every auth cookie is past its date), soon (the earliest
+    expires within a week), ok.
+    """
+    if YT_COOKIES_FILE is None:
+        return {"state": "missing",
+                "detail": "No YouTube cookies configured — some DRM-protected "
+                          "tracks can't be downloaded."}
+    if _yt_rejected_at is not None:
+        return {"state": "rejected",
+                "detail": "YouTube rejected these cookies — DRM-protected "
+                          "tracks can't be downloaded."}
+
+    # Netscape format: domain, flag, path, secure, expiry, name, value.
+    # httponly cookies are prefixed "#HttpOnly_", so they are data, not comments.
+    expiries = []
+    try:
+        for line in YT_COOKIES_FILE.read_text().splitlines():
+            if not line.strip() or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 6 or parts[5] not in _YT_AUTH_COOKIES:
+                continue
+            expiry = int(parts[4] or 0)
+            if expiry:  # 0 means a session cookie, which has no date to check
+                expiries.append(expiry)
+    except (OSError, ValueError):
+        return {"state": "ok", "detail": ""}   # unreadable/odd: don't cry wolf
+
+    if not expiries:
+        return {"state": "ok", "detail": ""}
+    soonest = min(expiries)
+    now = time.time()
+    if soonest <= now:
+        return {"state": "expired",
+                "detail": "YouTube cookies have expired — DRM-protected tracks "
+                          "can't be downloaded."}
+    if soonest - now < 7 * 24 * 3600:
+        # Round rather than floor: 2.99 days away should read "3 days", and
+        # anything under a day should say "1", not "0".
+        days = max(1, round((soonest - now) / 86400))
+        return {"state": "soon",
+                "detail": f"YouTube cookies expire in {days} day{'s' if days != 1 else ''} — "
+                          "DRM-protected tracks will stop downloading."}
+    return {"state": "ok", "detail": ""}
+
 # --- Auth ----------------------------------------------------------------
 # A single shared password gates the whole app. The gate is only active when
 # SCDL_PASSWORD is set; leave it unset for local/dev and the app stays open.
@@ -399,6 +466,13 @@ async def get_logs(n: int = 200) -> Response:
     return PlainTextResponse(
         "\n".join(lines) + "\n" if lines else "(no log records yet)\n"
     )
+
+
+@app.get("/api/yt-status")
+async def yt_status() -> dict:
+    """State of the YouTube cookies, for the banner in the UI. Behind auth like
+    everything else — it says something about how the deployment is set up."""
+    return _yt_cookie_status()
 
 
 @app.get("/api/ping")
@@ -1247,10 +1321,18 @@ async def _youtube_fallback(
         stderr=asyncio.subprocess.STDOUT,
     )
     assert proc.stdout is not None
+    global _yt_rejected_at
     async for raw in proc.stdout:
         line = raw.decode(errors="replace").rstrip()
-        if line:
-            yield sse({"type": "log", "msg": f"{label} YT  {line}"})
+        if not line:
+            continue
+        if YT_COOKIES_FILE is not None and _YT_REJECTED_RE.search(line):
+            # YouTube told us the session is no good. Remember it so the UI can
+            # keep warning after this download finishes.
+            _yt_rejected_at = time.time()
+            log.warning("%s YT  cookies rejected by YouTube: %s", label, line)
+            yield _status_event(track_id, "YouTube rejected our cookies")
+        yield sse({"type": "log", "msg": f"{label} YT  {line}"})
     rc = await proc.wait()
     produced = _read_yt_path(path_file, output_dir)
     log.info(
@@ -1284,6 +1366,8 @@ async def _youtube_fallback(
                 yield sse({"type": "info", "msg": f"{label} YT  tag write failed: {e}"})
             if status is not None:
                 status["ok"] = True
+            # A successful fetch means the cookies are working after all.
+            _yt_rejected_at = None
             yield _status_event(
                 track_id, f"Saved from YouTube ({produced.stat().st_size / 1e6:.1f} MB)"
             )

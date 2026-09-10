@@ -83,6 +83,38 @@ flyctl secrets set SCDL_YT_COOKIES="$(cat cookies.txt)"
   challenge; without it the fallback works for many tracks but not all. The
   app spills this to a temp file at startup for `yt-dlp --cookies`.
 
+## YouTube cookies
+
+The DRM fallback searches YouTube, which challenges unauthenticated requests.
+Cookies get past that. Google invalidates them fairly aggressively, so expect
+to re-run this periodically — **the UI shows a banner** when they expire, are
+about to, or get rejected mid-download.
+
+```sh
+make yt-cookies          # re-export from Firefox, scope, push to Fly
+make yt-cookies-check    # is the secret set?
+make yt-cookies-revoke   # remove it (the fallback then runs unauthenticated)
+```
+
+`BROWSER=chrome make yt-cookies` if you don't use Firefox.
+
+Two things worth knowing:
+
+- **Use a throwaway Google account.** Even scoped to youtube.com these are
+  Google account credentials, not YouTube-only tokens, and they end up in a
+  Fly secret that is spilled to a temp file inside the container.
+- **`--cookies-from-browser` dumps your entire browser profile** — thousands of
+  cookies across hundreds of hosts, live Gmail and cloud-console sessions
+  included. `scripts/yt-cookies.py` filters it to youtube.com before anything
+  leaves the machine, and pipes the result straight into `flyctl` so the
+  credentials never touch a file you have to remember to delete. Don't
+  shortcut it by piping `yt-dlp --cookies` output to `flyctl` yourself.
+
+`make yt-cookies-revoke` only removes the Fly secret. If you think the cookies
+leaked, sign the session out at
+[myaccount.google.com](https://myaccount.google.com/device-activity), which
+invalidates them everywhere.
+
 ## Logs
 
 Two levels. `INFO` (the default) is a few lines per track — what it is, which
