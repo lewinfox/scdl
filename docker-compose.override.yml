@@ -8,6 +8,9 @@ services:
       # only turns on when SCDL_PASSWORD is set; prod sets the real value via
       # `flyctl secrets set SCDL_PASSWORD=...`.
       - SCDL_PASSWORD=dev
+      # Dev default: full per-transcoding ranking, ffmpeg/yt-dlp output and
+      # timings. Prod leaves this unset and gets the INFO summary instead.
+      - SCDL_LOG_LEVEL=${SCDL_LOG_LEVEL:-DEBUG}
     volumes:
       - ./main.py:/app/main.py
       - ./index.html:/app/index.html

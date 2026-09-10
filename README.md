@@ -83,6 +83,42 @@ flyctl secrets set SCDL_YT_COOKIES="$(cat cookies.txt)"
   challenge; without it the fallback works for many tracks but not all. The
   app spills this to a temp file at startup for `yt-dlp --cookies`.
 
+## Logs
+
+Two levels. `INFO` (the default) is a few lines per track — what it is, which
+stream won and why, what got written, how long it took:
+
+```
+09:21:59 INFO  [3/12] SKILAH — Earthquake
+09:22:00 INFO  [3/12] transcoded aac_160k -> mp3 320 CBR -> [SKILAH] Earthquake.mp3 (665,325 bytes in 0.9s)
+09:22:00 INFO  [3/12] tagged: artist='SKILAH' title='Earthquake' genre='Techhouse' year='2025' art=88KB image/jpeg
+09:22:00 INFO  [3/12] done from SoundCloud in 1.0s
+```
+
+`SCDL_LOG_LEVEL=DEBUG` adds the full transcoding ranking (so a surprising
+choice can be traced to its inputs), raw ffmpeg and yt-dlp output, and timings:
+
+```
+DEBUG [3/12] 3 transcoding(s) advertised, 2 plaintext; ranked:
+DEBUG [3/12]   1. preset=aac_160k  score=160  proto=hls         mime=audio/mp4
+DEBUG [3/12]   2. preset=mp3_1_0   score=128  proto=progressive mime=audio/mpeg
+DEBUG [3/12]   (1 encrypted variant(s) filtered out before ranking)
+```
+
+Records go to stdout (`docker compose logs -f`) and to a fixed-size in-memory
+ring buffer, readable at **`/api/logs`** (`?n=` for how many lines, newest
+last). The ring buffer is why DEBUG is safe to leave on for a while: it holds
+`SCDL_LOG_BUFFER` lines (default 500) and evicts the oldest, so nothing grows
+without bound.
+
+Signed CDN URLs are logged with their query string stripped, and the
+SoundCloud OAuth token is never logged.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SCDL_LOG_LEVEL` | `INFO` | `DEBUG` for per-transcoding detail |
+| `SCDL_LOG_BUFFER` | `500` | Lines held in memory for `/api/logs` |
+
 ## Local dev
 
 ```sh

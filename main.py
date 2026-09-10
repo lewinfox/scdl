@@ -12,15 +12,18 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets as secretslib
 import shlex
 import shutil
+import sys
 import tempfile
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -29,13 +32,26 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-app = FastAPI()
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # One line saying what config we came up under — the first thing you want
+    # when a download behaves differently to how you expected.
+    log.info("scdl up — log level %s, ring buffer %d lines, concurrency %d, "
+             "downloads -> %s, sc token %s",
+             logging.getLevelName(log.level), LOG_BUFFER_LINES, DOWNLOAD_CONCURRENCY,
+             DEFAULT_DOWNLOAD_DIR, "configured" if SC_TOKEN else "MISSING")
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 
 DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
@@ -72,6 +88,51 @@ try:
     DOWNLOAD_CONCURRENCY = max(1, int(os.environ.get("SCDL_CONCURRENCY", "4")))
 except ValueError:
     DOWNLOAD_CONCURRENCY = 4
+
+# Logging. Two levels: INFO is one line per decision and outcome, DEBUG adds the
+# per-transcoding ranking, raw ffmpeg/yt-dlp output and timings. Set
+# SCDL_LOG_LEVEL=DEBUG when you want to follow a download step by step.
+#
+# Records also land in a fixed-size in-memory ring buffer readable at
+# /api/logs, so the recent history is there without trawling `docker compose
+# logs` — and, because it's a deque with a maxlen, without growing without
+# bound in a long-lived container.
+LOG_LEVEL = (os.environ.get("SCDL_LOG_LEVEL") or "INFO").upper()
+try:
+    LOG_BUFFER_LINES = max(1, int(os.environ.get("SCDL_LOG_BUFFER", "500")))
+except ValueError:
+    LOG_BUFFER_LINES = 500
+
+
+class _RingHandler(logging.Handler):
+    """Keeps the most recent formatted records in memory, oldest evicted first."""
+
+    def __init__(self, capacity: int) -> None:
+        super().__init__()
+        self.records: deque[str] = deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.records.append(self.format(record))
+        except Exception:  # logging must never break a download
+            pass
+
+
+log = logging.getLogger("scdl")
+log.setLevel(LOG_LEVEL if LOG_LEVEL in logging._nameToLevel else "INFO")
+log.propagate = False   # uvicorn owns the root logger; don't double-print
+_ring = _RingHandler(LOG_BUFFER_LINES)
+for _h, _fmt in ((logging.StreamHandler(sys.stdout), "%(asctime)s %(levelname)-5s %(message)s"),
+                 (_ring, "%(asctime)s %(levelname)-5s %(message)s")):
+    _h.setFormatter(logging.Formatter(_fmt, datefmt="%H:%M:%S"))
+    log.addHandler(_h)
+
+# Signed CDN stream URLs carry auth in their query string, and the SoundCloud
+# OAuth token appears in some of them. Never log a URL with its query intact.
+def _safe_url(url: str) -> str:
+    split = urlsplit(url)
+    return urlunsplit((split.scheme, split.netloc, split.path, "", "")) + ("?…" if split.query else "")
+
 
 # Persistent storage dir (session secret etc.). Overridable via SCDL_DATA_DIR —
 # in Docker this points at a mounted volume.
@@ -293,6 +354,15 @@ async def index() -> FileResponse:
     return FileResponse(INDEX_PATH)
 
 
+@app.get("/api/logs")
+async def get_logs(n: int = 200) -> Response:
+    """Most recent log lines, newest last. Behind the same auth as everything
+    else. Bounded by the ring buffer, so `n` larger than SCDL_LOG_BUFFER just
+    returns whatever is still held."""
+    lines = list(_ring.records)[-max(1, min(n, LOG_BUFFER_LINES)):]
+    return PlainTextResponse("\n".join(lines) + "\n" if lines else "(no log records yet)\n")
+
+
 @app.get("/api/ping")
 async def ping() -> dict:
     return {"ok": True}
@@ -396,6 +466,9 @@ async def _process_track(
     # Tags come from SoundCloud even when the audio ends up coming from YouTube,
     # so build this once and hand it to both paths.
     meta = _extract_meta(t)
+    log.info("%s %s", label or "[1/1]", name)
+    log.debug("%s   metadata: %s", label, _describe_tags(meta, None))
+    started = time.monotonic()
     # Blue: downloading from SoundCloud.
     yield _track_event(idx, total, name, "sc")
 
@@ -404,15 +477,21 @@ async def _process_track(
                                     status, idx, meta=meta):
         yield ev
     if status["ok"]:
+        log.info("%s done from SoundCloud in %.1fs", label or "[1/1]",
+                 time.monotonic() - started)
         yield _track_event(idx, total, name, "done")
         return
 
     # Nothing playable from SC — yellow while we try YouTube.
+    log.info("%s nothing playable from SoundCloud, trying YouTube", label or "[1/1]")
     yield _track_event(idx, total, name, "yt")
     yt_status = {"ok": False}
     async for ev in _youtube_fallback(user, title, output_dir, label, idx, yt_status,
                                       client=client, meta=meta):
         yield ev
+    log.info("%s %s after %.1fs", label or "[1/1]",
+             "done via YouTube" if yt_status["ok"] else "FAILED",
+             time.monotonic() - started)
     yield _track_event(idx, total, name, "done" if yt_status["ok"] else "failed")
 
 
@@ -556,14 +635,32 @@ async def _download_track(
         -_preset_score(tc.get("preset")),
         0 if (tc.get("format") or {}).get("protocol") == "progressive" else 1,
     ))
+    if log.isEnabledFor(logging.DEBUG):
+        # The whole ranking, so a surprising choice can be traced to its inputs.
+        log.debug("%s %d transcoding(s) advertised, %d plaintext; ranked:",
+                  label, len(transcodings), len(plaintext))
+        for rank, cand in enumerate(plaintext, 1):
+            cfmt = cand.get("format") or {}
+            log.debug("%s   %d. preset=%-9s score=%-4d proto=%-11s mime=%s",
+                      label, rank, cand.get("preset", "?"),
+                      _preset_score(cand.get("preset")),
+                      cfmt.get("protocol", "?"), cfmt.get("mime_type", "?"))
+        dropped = len(transcodings) - len(plaintext)
+        if dropped:
+            log.debug("%s   (%d encrypted variant(s) filtered out before ranking)",
+                      label, dropped)
 
     art_cache: list = []   # one-slot memo so a retried transcoding doesn't refetch
 
     async def _tag(path: Path) -> None:
         """Fetch cover art (once per track) and write tags."""
         if not art_cache:
-            art_cache.append(await _fetch_artwork(client, meta.get("artwork_url", "")))
-        await asyncio.to_thread(_write_mp3_tags, path, meta, art_cache[0])
+            art_url = meta.get("artwork_url", "")
+            log.debug("%s   fetching artwork %s", label, _safe_url(art_url) or "(none)")
+            art_cache.append(await _fetch_artwork(client, art_url))
+        art = art_cache[0]
+        await asyncio.to_thread(_write_mp3_tags, path, meta, art)
+        log.info("%s tagged: %s", label, _describe_tags(meta, art))
 
     for tc in plaintext:
         fmt = tc.get("format") or {}
@@ -575,6 +672,7 @@ async def _download_track(
             continue
 
         yield sse({"type": "info", "msg": f"{label}   trying {preset} / {proto}"})
+        attempt_started = time.monotonic()
         params = {"client_id": client_id}
         if track_auth:
             params["track_authorization"] = track_auth
@@ -589,7 +687,10 @@ async def _download_track(
             yield sse({"type": "info", "msg": f"{label}   skip ({e})"})
             continue
         if not stream_url:
+            log.debug("%s   %s resolved to an empty stream url", label, preset)
             continue
+        log.debug("%s   %s resolved to %s in %.2fs", label, preset,
+                  _safe_url(stream_url), time.monotonic() - attempt_started)
 
         out_path = _make_output_path(output_dir, user, title, "mp3")
 
@@ -605,6 +706,10 @@ async def _download_track(
                 size = out_path.stat().st_size
                 if size == 0:
                     raise RuntimeError("empty response body")
+                elapsed = time.monotonic() - attempt_started
+                log.info("%s copied %s untouched -> %s (%s bytes in %.1fs, %.1f MB/s)",
+                         label, preset, out_path.name, f"{size:,}", elapsed,
+                         size / 1e6 / elapsed if elapsed else 0)
                 yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
                     await _tag(out_path)
@@ -669,6 +774,9 @@ async def _download_track(
                 continue
             if rc == 0 and out_path.exists() and out_path.stat().st_size > 0:
                 size = out_path.stat().st_size
+                elapsed = time.monotonic() - attempt_started
+                log.info("%s transcoded %s -> mp3 320 CBR -> %s (%s bytes in %.1fs)",
+                         label, preset, out_path.name, f"{size:,}", elapsed)
                 yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
                     await _tag(out_path)
@@ -793,6 +901,18 @@ async def _fetch_artwork(client, url: str) -> Optional[tuple[bytes, str]]:
     return None
 
 
+def _describe_tags(meta: dict, art: Optional[tuple[bytes, str]]) -> str:
+    """One-line summary of what went into the tags, for the log."""
+    parts = [f"{k}={meta[k]!r}" for k in ("artist", "title", "album", "genre", "year")
+             if meta.get(k)]
+    if art:
+        n = len(art[0])
+        parts.append(f"art={n // 1024}KB {art[1]}" if n >= 1024 else f"art={n}B {art[1]}")
+    else:
+        parts.append("art=none")
+    return " ".join(parts)
+
+
 def _write_mp3_tags(path: Path, meta: dict,
                     art: Optional[tuple[bytes, str]] = None) -> None:
     """Write ID3v2.3 tags. Only frames we have a value for are touched, so a
@@ -879,6 +999,8 @@ async def _youtube_fallback(
     else:
         yield sse({"type": "info",
                    "msg": f"{label} YT fallback: no SCDL_YT_COOKIES configured — may hit YouTube's bot wall"})
+    log.debug("%s YT  exec: %s", label, " ".join(cmd))
+    yt_started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -891,6 +1013,9 @@ async def _youtube_fallback(
             yield sse({"type": "log", "msg": f"{label} YT  {line}"})
     rc = await proc.wait()
     produced = _read_yt_path(path_file, output_dir)
+    log.info("%s YT  yt-dlp exit %d after %.1fs, wrote %s", label, rc,
+             time.monotonic() - yt_started,
+             produced.name if produced else "(nothing we could locate)")
     if rc == 0:
         yield sse({"type": "info", "msg": f"{label} YT fallback: saved"})
         if produced is not None and produced.exists():
@@ -903,6 +1028,7 @@ async def _youtube_fallback(
                 if client is not None:
                     art = await _fetch_artwork(client, tag_meta.get("artwork_url", ""))
                 await asyncio.to_thread(_write_mp3_tags, produced, tag_meta, art)
+                log.info("%s YT  tagged: %s", label, _describe_tags(tag_meta, art))
                 yield sse({"type": "info",
                            "msg": f"{label} YT  tagged from SoundCloud"
                                   + (" + artwork" if art else "")})
@@ -942,6 +1068,24 @@ def sanitize_filename(name: str) -> str:
 
 
 def sse(payload: dict) -> str:
+    """Emit one SSE event, and mirror it to the log.
+
+    The browser discards `info` and `log` events, so this is the only place
+    they're readable. They sit at DEBUG: the INFO narrative is carried by the
+    purpose-written log lines at each decision point, and duplicating it here
+    would just double every download. Errors keep their own level.
+    """
+    kind = payload.get("type", "?")
+    level = logging.ERROR if kind == "error" else logging.DEBUG
+    if log.isEnabledFor(level):
+        # The token in a `saved` event is a capability for /api/file — never log it.
+        if kind == "saved":
+            detail = payload.get("filename", "")
+        elif kind == "track":
+            detail = f"{payload.get('state', '?')} {payload.get('name', '')}"
+        else:
+            detail = payload.get("msg") or payload.get("name") or ""
+        log.log(level, "%s %s", kind, detail)
     return f"data: {json.dumps(payload)}\n\n"
 
 
