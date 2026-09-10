@@ -23,8 +23,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
       # Lints, checks formatting, and imports main.py on the same Python the
       # image runs — the Makefile derives that version from the Dockerfile, so
       # the two can't drift apart.
@@ -45,7 +45,7 @@ jobs:
       image_ref: ${{ steps.ref.outputs.image_ref }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GHCR refs must be lowercase. github.repository_owner preserves case,
       # so normalise it here. Expose it as a step output too so the deploy job
@@ -60,13 +60,13 @@ jobs:
           OWNER: ${{ github.repository_owner }}
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -74,7 +74,7 @@ jobs:
 
       - name: Extract image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_REF }}
           tags: |
@@ -83,7 +83,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           # Pi 4/5 64-bit runs arm64; bake amd64 too so we can pull from any
@@ -106,7 +106,7 @@ jobs:
       group: deploy-scdl
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
