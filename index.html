@@ -153,7 +153,10 @@
                 }
             }
             .wrap {
-                max-width: 720px;
+                /* Wider than the original 720 so a track row fits its name,
+                   status and download link on one line, but no wider — the
+                   content doesn't fill it and long lines get tiring to scan. */
+                width: min(100%, 880px);
                 margin-inline: auto;
                 position: relative;
                 z-index: 1;
@@ -589,27 +592,24 @@
             .dl-note[hidden] {
                 display: none;
             }
-            /* One pill per track; the whole card glows by status. */
+            /* One row per track: marker, name, live status, download link. */
             .dl-tracks {
                 display: flex;
-                flex-wrap: wrap;
-                gap: 0.55rem;
+                flex-direction: column;
+                gap: 0.4rem;
             }
             .dl-track {
                 --glow: var(--info);
-                max-width: 100%;
+                display: grid;
+                grid-template-columns: auto minmax(0, 1fr) minmax(0, auto) auto;
+                align-items: center;
+                gap: 0.2rem 0.9rem;
                 padding: 0.5rem 0.9rem;
-                border-radius: 999px;
+                border-radius: 0.6rem;
                 border: 1px solid var(--glow);
                 background: rgba(5, 0, 13, 0.6);
                 color: var(--text);
                 font-size: 0.82rem;
-                font-weight: 600;
-                letter-spacing: 0.01em;
-                text-decoration: none;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
                 box-shadow:
                     0 0 8px var(--glow),
                     inset 0 0 10px rgba(255, 255, 255, 0.04);
@@ -618,17 +618,87 @@
                     border-color 220ms,
                     color 220ms;
             }
+            /* A small square that takes the row's colour, so a long list scans
+               vertically without reading any text. */
+            .dl-track-mark {
+                width: 9px;
+                height: 9px;
+                border-radius: 2px;
+                background: var(--glow);
+                box-shadow: 0 0 7px var(--glow);
+            }
+            .dl-track-name {
+                font-weight: 600;
+                letter-spacing: 0.01em;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            /* The one-liner. Dimmer than the name so the row still reads as
+               "track first, detail second". */
+            .dl-track-status {
+                /* Wide: status shares the name's line, right-aligned before the
+                   download link. Narrow: it drops to its own line (below). */
+                grid-row: 1;
+                grid-column: 3;
+                justify-self: end;
+                text-align: right;
+                /* Cap it, or a long status shrinks the track name instead of
+                   ellipsising itself. The longest we emit is ~42 characters. */
+                max-width: 24rem;
+                font-size: 0.72rem;
+                font-weight: 500;
+                color: var(--muted);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            /* Download link, revealed only once the file exists. */
+            .dl-track-get {
+                grid-row: 1;
+                grid-column: 4;
+                padding: 0.15rem 0.6rem;
+                border-radius: 999px;
+                border: 1px solid var(--good);
+                color: var(--good);
+                font-size: 0.72rem;
+                font-weight: 700;
+                text-decoration: none;
+                white-space: nowrap;
+                box-shadow: 0 0 8px rgba(109, 255, 182, 0.35);
+            }
+            .dl-track-get:hover {
+                background: rgba(109, 255, 182, 0.12);
+            }
+            .dl-track-get[hidden] {
+                display: none;
+            }
             /* Blue: downloading from SoundCloud. */
             .dl-track.sc {
                 --glow: var(--neon);
                 color: #d6fbff;
-                animation: track-pulse 1.4s ease-in-out infinite;
             }
             /* Yellow: falling back to YouTube. */
             .dl-track.yt {
                 --glow: var(--neon-4);
                 color: #fffce0;
-                animation: track-pulse 1.4s ease-in-out infinite;
+            }
+            /* Only the in-flight states pulse, and only the marker — a whole
+               row breathing is too much when twelve of them are running. */
+            .dl-track.sc .dl-track-mark,
+            .dl-track.yt .dl-track-mark {
+                animation: mark-pulse 1.4s ease-in-out infinite;
+            }
+            @keyframes mark-pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                    box-shadow: 0 0 7px var(--glow);
+                }
+                50% {
+                    opacity: 0.45;
+                    box-shadow: 0 0 14px var(--glow);
+                }
             }
             /* Red: nothing playable found. */
             .dl-track.failed {
@@ -640,18 +710,22 @@
                 --glow: var(--good);
                 color: #d6ffe9;
             }
-            @keyframes track-pulse {
-                0%,
-                100% {
-                    box-shadow:
-                        0 0 7px var(--glow),
-                        inset 0 0 10px rgba(255, 255, 255, 0.04);
+            /* Phones and narrow windows: the status can't share a line with a
+               track name without both being ellipsised to uselessness, so give
+               it its own row spanning the full width. */
+            @media (max-width: 620px) {
+                .dl-track {
+                    grid-template-columns: auto minmax(0, 1fr) auto;
                 }
-                50% {
-                    box-shadow:
-                        0 0 18px var(--glow),
-                        0 0 30px var(--glow),
-                        inset 0 0 14px rgba(255, 255, 255, 0.06);
+                .dl-track-status {
+                    grid-row: 2;
+                    grid-column: 2 / -1;
+                    justify-self: start;
+                    text-align: left;
+                    max-width: none;
+                }
+                .dl-track-get {
+                    grid-column: 3;
                 }
             }
             .dot {
@@ -809,7 +883,7 @@
                 <div class="col">
                     <form id="f" class="panel">
                         <label
-                            >SoundCloud URL
+                            >SoundCloud URL (track or playlist)
                             <input
                                 id="url"
                                 type="url"
@@ -822,7 +896,6 @@
                     </form>
 
                     <div id="downloads"></div>
-
                 </div>
             </div>
         </div>
@@ -919,18 +992,36 @@
                     this.noteEl.hidden = false;
                 }
 
-                // Create or update a track's pill. state: sc | yt | failed | done.
-                upsertTrack(id, name, state) {
+                // Find a track's row, creating it on first mention.
+                trackRow(id) {
                     let rec = this.tracks.get(id);
-                    if (!rec) {
-                        const a = document.createElement("a");
-                        a.className = "dl-track";
-                        this.tracksEl.appendChild(a);
-                        rec = { el: a, state: null, token: null };
-                        this.tracks.set(id, rec);
-                    }
+                    if (rec) return rec;
+                    const row = document.createElement("div");
+                    row.className = "dl-track";
+                    row.innerHTML = `
+                        <span class="dl-track-mark"></span>
+                        <span class="dl-track-name"></span>
+                        <a class="dl-track-get" hidden>Download</a>
+                        <span class="dl-track-status"></span>
+                    `;
+                    this.tracksEl.appendChild(row);
+                    rec = {
+                        el: row,
+                        nameEl: row.querySelector(".dl-track-name"),
+                        statusEl: row.querySelector(".dl-track-status"),
+                        getEl: row.querySelector(".dl-track-get"),
+                        state: null,
+                        token: null,
+                    };
+                    this.tracks.set(id, rec);
+                    return rec;
+                }
+
+                // Create or update a track's row. state: sc | yt | failed | done.
+                upsertTrack(id, name, state) {
+                    const rec = this.trackRow(id);
                     if (name) {
-                        rec.el.textContent = name;
+                        rec.nameEl.textContent = name;
                         rec.el.title = name;
                     }
                     rec.state = state;
@@ -938,18 +1029,24 @@
                     this.tracksStarted = true;
                 }
 
-                // Server saved a file for this track: wire up the download link
-                // (the green pill) and fire it automatically.
+                // The one-liner under the track name. Each replaces the last.
+                setTrackStatus(id, msg) {
+                    if (id == null) return;
+                    this.trackRow(id).statusEl.textContent = msg;
+                }
+
+                // Server saved a file for this track: reveal the download link
+                // and fire it automatically.
                 saveFile(id, token, filename) {
-                    let rec = this.tracks.get(id);
-                    if (!rec) {
+                    const rec = this.trackRow(id);
+                    if (!rec.nameEl.textContent) {
                         this.upsertTrack(id, filename, "done");
-                        rec = this.tracks.get(id);
                     }
                     rec.token = token;
-                    rec.el.href = "api/file/" + encodeURIComponent(token);
-                    rec.el.download = filename;
-                    rec.el.click();
+                    rec.getEl.href = "api/file/" + encodeURIComponent(token);
+                    rec.getEl.download = filename;
+                    rec.getEl.hidden = false;
+                    rec.getEl.click();
                 }
 
                 handleEvent(ev) {
@@ -961,6 +1058,10 @@
                         this.total = ev.total || this.total;
                         this.upsertTrack(ev.id, ev.name, ev.state);
                         this.updateProgress();
+                        return;
+                    }
+                    if (ev.type === "status") {
+                        this.setTrackStatus(ev.id, ev.msg);
                         return;
                     }
                     if (ev.type === "saved") {
@@ -981,8 +1082,9 @@
                         }
                         return;
                     }
-                    // log / info events are intentionally ignored — the pills
-                    // are the whole UI now.
+                    // log / info events are intentionally ignored. The rows show
+                    // a curated `status` one-liner instead; the full detail lives
+                    // in the server log (/api/logs, SCDL_LOG_LEVEL=DEBUG).
                 }
 
                 updateProgress() {

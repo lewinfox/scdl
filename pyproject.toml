@@ -8,3 +8,9 @@ dependencies = [
     "fastapi>=0.136.1",
     "starlette>=1.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.7",
+    "ty>=0.0.80",
+]

@@ -7,12 +7,18 @@ services:
       - "8765:8765"
     environment:
       - SCDL_DATA_DIR=/data
+      # Credentials come from your shell or a .env file next to this compose
+      # file — never commit them here. SCDL_SC_TOKEN is the oauth_token cookie
+      # value from a logged-in SoundCloud session and is required; the YouTube
+      # cookies are optional and only help the DRM fallback.
+      - SCDL_SC_TOKEN=${SCDL_SC_TOKEN:?set SCDL_SC_TOKEN in .env or your shell}
+      - SCDL_YT_COOKIES=${SCDL_YT_COOKIES:-}
     volumes:
       # Staging dir for downloads-in-flight. The server deletes each file
       # once the browser fetches it, so this normally stays empty.
       - ./downloads:/app/downloads
-      # Persistent auth blob: the SoundCloud oauth_token and (optional)
-      # YouTube cookies.txt live here, set via the Auth panel in the UI.
+      # Session secret for the login gate. Credentials are read from the
+      # environment, not from here — there is no in-app configuration.
       - scdl-data:/data
     restart: unless-stopped
 
