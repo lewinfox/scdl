@@ -1,11 +1,41 @@
 FLY_APP ?= scdl-lewinfox
 BROWSER ?= firefox
 
-.PHONY: help yt-cookies yt-cookies-check yt-cookies-revoke dev secrets
+# Derived, not declared, so they can't drift from what actually ships:
+# the Python the container runs, and the deps main.py asks for.
+PY_VERSION = $(shell sed -n 's/^FROM python:\([0-9.]*\)-.*/\1/p' Dockerfile)
+PY_DEPS = $(shell sed -n '/^# dependencies = \[/,/^# \]/p' main.py \
+             | sed -n 's/^#   "\(.*\)",*$$/--with "\1"/p' | tr '\n' ' ')
+
+.PHONY: help check format yt-cookies yt-cookies-check yt-cookies-revoke dev secrets
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+## --- Checks ----------------------------------------------------------------
+
+check:  ## Lint, format-check, and import main.py on the container's Python
+	@command -v uv >/dev/null || { echo "need uv (https://docs.astral.sh/uv/)"; exit 1; }
+	@echo "==> ruff format --check"
+	@uvx ruff format --check .
+	@echo "==> ruff check"
+	@uvx ruff check .
+	@echo "==> import main.py under Python $(PY_VERSION) (what the image runs)"
+	@# Not a formality. Local dev is on 3.14, where PEP 649 defers annotation
+	@# evaluation; the image is on 3.13, where a bad annotation raises at import
+	@# and the deploy smoke-check fails. Import on the version that ships.
+	@# --no-project because pyproject.toml pins a newer requires-python than
+	@# the image, which would otherwise refuse to resolve.
+	@cd $(CURDIR) && uv run --quiet --no-project --python $(PY_VERSION) $(PY_DEPS) \
+		python -c "import main; print('   main.py imports cleanly on $(PY_VERSION)')"
+	@echo "==> python syntax: scripts/"
+	@uv run --quiet --no-project --python $(PY_VERSION) python -m compileall -q scripts/
+	@echo "OK"
+
+format:  ## Apply ruff formatting and autofixes
+	@uvx ruff format .
+	@uvx ruff check --fix .
 
 ## --- YouTube cookies -------------------------------------------------------
 ##

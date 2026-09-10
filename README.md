@@ -83,6 +83,28 @@ flyctl secrets set SCDL_YT_COOKIES="$(cat cookies.txt)"
   challenge; without it the fallback works for many tracks but not all. The
   app spills this to a temp file at startup for `yt-dlp --cookies`.
 
+## Checks
+
+```sh
+make check    # lint, format-check, and import main.py on the image's Python
+make format   # apply ruff formatting and autofixes
+```
+
+CI runs `make check` on every PR and before any build, so a broken import is
+caught before merge rather than by Fly's smoke check after deploy.
+
+The import step matters more than it looks. It runs against the Python version
+parsed out of the `Dockerfile`, and the dependency list parsed out of `main.py`'s
+PEP 723 header — derived rather than declared, so there is no fourth copy of
+either to fall out of step. Everything is on Python 3.14 now (`Dockerfile`,
+`pyproject.toml`, `.python-version`, the PEP 723 header); when local and
+deployed disagreed on the version, a bad annotation passed locally and crashed
+the container on boot.
+
+Lint rules are pinned in `pyproject.toml` rather than inherited from ruff's
+defaults, which move between releases — a laptop and CI should never disagree
+about what passes.
+
 ## YouTube cookies
 
 The DRM fallback searches YouTube, which challenges unauthenticated requests.
@@ -172,6 +194,6 @@ docker compose up --build
 - Credentials come from the environment (Fly secrets / env vars), so they're
   never exposed or editable through the UI. The YT cookies are spilled to a
   `chmod 600` temp file at startup so `yt-dlp` can read them.
-- The image uses `python:3.13-slim` because `bun` (the JS runtime yt-dlp
+- The image uses `python:3.14-slim` because `bun` (the JS runtime yt-dlp
   needs for YouTube extraction) requires glibc. Don't swap the base for
   Alpine without also swapping the JS runtime.

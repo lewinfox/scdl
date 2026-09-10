@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.14"
 # dependencies = [
 #   "fastapi>=0.110",
 #   "uvicorn>=0.27",
@@ -197,12 +197,12 @@ _YT_AUTH_COOKIES = {"SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO"}
 _YT_REJECTED_RE = re.compile(
     r"sign in to confirm|confirm you're not a bot|please sign in|"
     r"cookies are no longer valid|account cookies are invalid",
-    re.I,
+    re.IGNORECASE,
 )
 
 # Set when YouTube last told us the session was no good. Sticky until the next
 # successful fallback, so the UI can keep warning after the download finishes.
-_yt_rejected_at: Optional[float] = None
+_yt_rejected_at: float | None = None
 
 
 def _yt_cookie_status() -> dict:
@@ -213,20 +213,26 @@ def _yt_cookie_status() -> dict:
     expires within a week), ok.
     """
     if YT_COOKIES_FILE is None:
-        return {"state": "missing",
-                "detail": "No YouTube cookies configured — some DRM-protected "
-                          "tracks can't be downloaded."}
+        return {
+            "state": "missing",
+            "detail": "No YouTube cookies configured — some DRM-protected "
+            "tracks can't be downloaded.",
+        }
     if _yt_rejected_at is not None:
-        return {"state": "rejected",
-                "detail": "YouTube rejected these cookies — DRM-protected "
-                          "tracks can't be downloaded."}
+        return {
+            "state": "rejected",
+            "detail": "YouTube rejected these cookies — DRM-protected "
+            "tracks can't be downloaded.",
+        }
 
     # Netscape format: domain, flag, path, secure, expiry, name, value.
     # httponly cookies are prefixed "#HttpOnly_", so they are data, not comments.
     expiries = []
     try:
         for line in YT_COOKIES_FILE.read_text().splitlines():
-            if not line.strip() or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+            if not line.strip() or (
+                line.startswith("#") and not line.startswith("#HttpOnly_")
+            ):
                 continue
             parts = line.split("\t")
             if len(parts) < 6 or parts[5] not in _YT_AUTH_COOKIES:
@@ -234,25 +240,30 @@ def _yt_cookie_status() -> dict:
             expiry = int(parts[4] or 0)
             if expiry:  # 0 means a session cookie, which has no date to check
                 expiries.append(expiry)
-    except (OSError, ValueError):
-        return {"state": "ok", "detail": ""}   # unreadable/odd: don't cry wolf
+    except OSError, ValueError:
+        return {"state": "ok", "detail": ""}  # unreadable/odd: don't cry wolf
 
     if not expiries:
         return {"state": "ok", "detail": ""}
     soonest = min(expiries)
     now = time.time()
     if soonest <= now:
-        return {"state": "expired",
-                "detail": "YouTube cookies have expired — DRM-protected tracks "
-                          "can't be downloaded."}
+        return {
+            "state": "expired",
+            "detail": "YouTube cookies have expired — DRM-protected tracks "
+            "can't be downloaded.",
+        }
     if soonest - now < 7 * 24 * 3600:
         # Round rather than floor: 2.99 days away should read "3 days", and
         # anything under a day should say "1", not "0".
         days = max(1, round((soonest - now) / 86400))
-        return {"state": "soon",
-                "detail": f"YouTube cookies expire in {days} day{'s' if days != 1 else ''} — "
-                          "DRM-protected tracks will stop downloading."}
+        return {
+            "state": "soon",
+            "detail": f"YouTube cookies expire in {days} day{'s' if days != 1 else ''} — "
+            "DRM-protected tracks will stop downloading.",
+        }
     return {"state": "ok", "detail": ""}
+
 
 # --- Auth ----------------------------------------------------------------
 # A single shared password gates the whole app. The gate is only active when
