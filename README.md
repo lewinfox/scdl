@@ -1,9 +1,13 @@
 # scdl — SoundCloud Archiver
 
-Tiny self-hosted web app for grabbing SoundCloud tracks as MP3. DRM-locked
-tracks transparently fall back to a YouTube search via `yt-dlp`. A glowing
-"Download" button lights up when each file is ready; clicking it streams the
-file to your browser and deletes it from the server.
+Tiny self-hosted web app for grabbing SoundCloud tracks as MP3. It picks the
+highest-quality stream SoundCloud will serve and tags the result with artwork,
+artist, title, album, genre and year. Streams that are already MP3 are copied
+byte-for-byte; anything else is encoded at 320 kbps CBR — constant bitrate, so
+DJ software beatgrids don't drift. DRM-locked tracks transparently fall back to
+a YouTube search via `yt-dlp`. A glowing "Download" button lights up when each
+file is ready; clicking it streams the file to your browser and deletes it from
+the server.
 
 ## Deploying via Docker Compose
 

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets as secretslib
+import shlex
 import shutil
 import tempfile
 import time
@@ -39,6 +40,30 @@ app = FastAPI()
 DEFAULT_DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 INDEX_PATH = Path(__file__).parent / "index.html"
 SC_API = "https://api-v2.soundcloud.com"
+
+# Approximate effective bitrate per SoundCloud transcoding preset. Used only to
+# order the variants, so the numbers just need to rank correctly relative to
+# each other. Deliberately NOT derived from the sibling `quality` field
+# ("hq"/"sq"/"lq"): aac_160k reports "sq", the same as the 128 kbps mp3_1_0, so
+# that field carries no ordering information.
+_PRESET_KBPS = {
+    "aac_256k": 256,
+    "aac_160k": 160,
+    "mp3_1_0": 128,   # SC's MP3, served both progressive and over HLS
+    "abr_sq": 128,    # adaptive HLS master playlist, tops out in the same tier
+    "aac_96k": 96,
+    "opus_0_0": 110,  # ~64 kbps Opus: perceptually near mp3 128, worse to re-encode
+}
+
+
+def _preset_score(preset: Optional[str]) -> int:
+    """Rank a transcoding preset by rough audio quality, best = highest."""
+    if preset in _PRESET_KBPS:
+        return _PRESET_KBPS[preset]
+    m = re.search(r"(\d{2,4})k", preset or "")
+    # An unrecognised preset sorts just below mp3_1_0 — prefer the devil we know.
+    return int(m.group(1)) if m else 100
+
 
 # How many playlist tracks to download at once. Most SC tracks are progressive
 # MP3 (network-bound direct copies), so parallelism is a clear win; the cap keeps
@@ -368,11 +393,15 @@ async def _process_track(
     title = t.get("title") or "untitled"
     user = (t.get("user") or {}).get("username") or "unknown"
     name = f"{user} — {title}"
+    # Tags come from SoundCloud even when the audio ends up coming from YouTube,
+    # so build this once and hand it to both paths.
+    meta = _extract_meta(t)
     # Blue: downloading from SoundCloud.
     yield _track_event(idx, total, name, "sc")
 
     status = {"ok": False}
-    async for ev in _download_track(client, client_id, t, output_dir, user, title, label, status, idx):
+    async for ev in _download_track(client, client_id, t, output_dir, user, title, label,
+                                    status, idx, meta=meta):
         yield ev
     if status["ok"]:
         yield _track_event(idx, total, name, "done")
@@ -381,7 +410,8 @@ async def _process_track(
     # Nothing playable from SC — yellow while we try YouTube.
     yield _track_event(idx, total, name, "yt")
     yt_status = {"ok": False}
-    async for ev in _youtube_fallback(user, title, output_dir, label, idx, yt_status):
+    async for ev in _youtube_fallback(user, title, output_dir, label, idx, yt_status,
+                                      client=client, meta=meta):
         yield ev
     yield _track_event(idx, total, name, "done" if yt_status["ok"] else "failed")
 
@@ -487,9 +517,13 @@ async def stream_direct_api(
 async def _download_track(
     client, client_id: str, track: dict, output_dir: Path,
     user: str, title: str, label: str, status: dict, track_id: Optional[int] = None,
+    *, meta: Optional[dict] = None,
 ) -> AsyncGenerator[str, None]:
     """Attempt each transcoding for a single track until one succeeds."""
     import httpx
+
+    if meta is None:
+        meta = _extract_meta(track)
 
     transcodings = (track.get("media") or {}).get("transcodings") or []
     if not transcodings:
@@ -515,8 +549,21 @@ async def _download_track(
                            "Falling back to YouTube via yt-dlp.")})
         return
 
-    # Prefer progressive (single GET, no muxing); fall back to HLS via ffmpeg.
-    plaintext.sort(key=lambda tc: 0 if (tc.get("format") or {}).get("protocol") == "progressive" else 1)
+    # Best audio first. Progressive only wins ties (it's a single GET with no
+    # ffmpeg), so when nothing outranks the 128 kbps mp3_1_0 we still take the
+    # cheap byte-copy path below — but a plaintext AAC 256 no longer loses to it.
+    plaintext.sort(key=lambda tc: (
+        -_preset_score(tc.get("preset")),
+        0 if (tc.get("format") or {}).get("protocol") == "progressive" else 1,
+    ))
+
+    art_cache: list = []   # one-slot memo so a retried transcoding doesn't refetch
+
+    async def _tag(path: Path) -> None:
+        """Fetch cover art (once per track) and write tags."""
+        if not art_cache:
+            art_cache.append(await _fetch_artwork(client, meta.get("artwork_url", "")))
+        await asyncio.to_thread(_write_mp3_tags, path, meta, art_cache[0])
 
     for tc in plaintext:
         fmt = tc.get("format") or {}
@@ -560,8 +607,9 @@ async def _download_track(
                     raise RuntimeError("empty response body")
                 yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
-                    await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
-                    yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
+                    await _tag(out_path)
+                    art_note = " + artwork" if art_cache[0] else ""
+                    yield sse({"type": "info", "msg": f"{label}   tagged{art_note}"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
                 yield _saved_event(out_path, track_id)
@@ -580,11 +628,17 @@ async def _download_track(
                 yield sse({"type": "info",
                            "msg": f"{label}   need ffmpeg to transcode {proto}/{mime} but it's not on PATH"})
                 continue
-            yield sse({"type": "info", "msg": f"{label}   {proto} -> mp3 (libmp3lame) -> {out_path.name}"})
+            yield sse({"type": "info", "msg": f"{label}   {proto} -> mp3 (libmp3lame 320 CBR) -> {out_path.name}"})
+            # 320k CBR, not VBR: variable-bitrate MP3 can drift beatgrids and cue
+            # points in DJ software. No -ar/-ac — resampling or downmixing would
+            # only add a generation of loss, and every DJ app reads 44.1 and 48k.
+            # -map_metadata -1 keeps ffmpeg out of the tags; mutagen owns them.
             ff_cmd = ["ffmpeg", "-y", "-loglevel", "warning",
                       "-i", stream_url,
-                      "-vn",
-                      "-c:a", "libmp3lame", "-q:a", "2",
+                      "-vn", "-sn", "-dn",
+                      "-map", "0:a:0",
+                      "-map_metadata", "-1",
+                      "-c:a", "libmp3lame", "-b:a", "320k", "-write_xing", "1",
                       str(out_path)]
             proc = None
             try:
@@ -617,8 +671,9 @@ async def _download_track(
                 size = out_path.stat().st_size
                 yield sse({"type": "info", "msg": f"{label}   saved {size:,} bytes"})
                 try:
-                    await asyncio.to_thread(_write_mp3_tags, out_path, user, title)
-                    yield sse({"type": "info", "msg": f"{label}   tagged artist/title"})
+                    await _tag(out_path)
+                    art_note = " + artwork" if art_cache[0] else ""
+                    yield sse({"type": "info", "msg": f"{label}   tagged{art_note}"})
                 except Exception as e:
                     yield sse({"type": "info", "msg": f"{label}   tag write failed: {e}"})
                 yield _saved_event(out_path, track_id)
@@ -639,21 +694,150 @@ def _make_output_path(output_dir: Path, user: str, title: str, ext: str) -> Path
     return output_dir / f"[{sanitize_filename(user)}] {sanitize_filename(title)}.{ext}"
 
 
-def _write_mp3_tags(path: Path, artist: str, title: str) -> None:
-    from mutagen.id3 import ID3, ID3NoHeaderError, TIT2, TPE1
+def _read_yt_path(path_file: Path, output_dir: Path) -> Optional[Path]:
+    """Read the real output path yt-dlp wrote to its --print-to-file sidecar.
+
+    Beats reconstructing the name ourselves: the download is only linkable if we
+    can find it, and the filename depends on yt-dlp's own post-processing. The
+    sidecar is removed either way.
+    """
+    try:
+        lines = [ln.strip() for ln in path_file.read_text().splitlines() if ln.strip()]
+    except OSError:
+        return None
+    finally:
+        path_file.unlink(missing_ok=True)
+    if not lines:
+        return None
+    path = Path(lines[-1])
+    # yt-dlp is ours to trust here, but the file must still land where we asked —
+    # /api/file only serves what we hand it a token for.
+    try:
+        path.resolve().relative_to(output_dir.resolve())
+    except ValueError:
+        return None
+    return path
+
+
+def _extract_meta(track: dict) -> dict:
+    """Pull the tag-worthy fields out of a SoundCloud v2 track object.
+
+    Only fields SoundCloud actually publishes — nothing is inferred or scraped
+    out of free text. Note there is no BPM and no key field in the v2 track
+    object (they're absent, not null), so we write neither; DJ software detects
+    both on import anyway.
+    """
+    pub = track.get("publisher_metadata") or {}
+    user = (track.get("user") or {}).get("username") or "unknown"
+
+    # publisher_metadata.artist is the real artist on label uploads; the
+    # uploader username is a poor stand-in ("MCG" for a Supermode track). Tags
+    # only — _make_output_path deliberately stays on the username so filenames
+    # don't shift under existing users.
+    artist = (pub.get("artist") or "").strip() or user
+
+    genre = (track.get("genre") or "").strip()
+    if not genre:
+        # tag_list is space-separated with multi-word entries quoted, e.g.
+        # 'Techno House "Deep House"'. shlex handles the quoting; str.split
+        # would shred it.
+        try:
+            tags = shlex.split(track.get("tag_list") or "")
+        except ValueError:
+            tags = []
+        genre = tags[0] if tags else ""
+
+    date = (track.get("release_date") or track.get("created_at") or "")
+    year = date[:4] if len(date) >= 4 and date[:4].isdigit() else ""
+
+    return {
+        "title": track.get("title") or "untitled",
+        "artist": artist,
+        "uploader": user,
+        "album": (pub.get("album_title") or "").strip(),
+        "genre": genre,
+        "year": year,
+        "url": track.get("permalink_url") or "",
+        "artwork_url": track.get("artwork_url") or (track.get("user") or {}).get("avatar_url") or "",
+    }
+
+
+# SoundCloud's artwork_url is a 100x100 "-large.jpg". The -t500x500 variant is
+# 50-120 KB and the right size to embed; -original can be several MB.
+_ART_SIZE_RE = re.compile(r"-(large|t\d+x\d+|original)\.(jpg|png)$", re.I)
+_ART_MAX_BYTES = 2 * 1024 * 1024
+
+
+async def _fetch_artwork(client, url: str) -> Optional[tuple[bytes, str]]:
+    """Fetch cover art as (bytes, mime). Returns None on any failure — artwork
+    is a nice-to-have and must never fail a download."""
+    if not url:
+        return None
+    big = _ART_SIZE_RE.sub(lambda m: f"-t500x500.{m.group(2)}", url)
+    try:
+        # Reuse the connection pool but drop the OAuth header — the artwork CDN
+        # serves these publicly, so there's no reason to hand it the token.
+        request = client.build_request("GET", big, timeout=8)
+        request.headers.pop("Authorization", None)
+        r = await client.send(request)
+        r.raise_for_status()
+        data = r.content
+    except Exception:
+        return None
+    if not data or len(data) > _ART_MAX_BYTES:
+        return None
+    if data[:2] == b"\xff\xd8":
+        return data, "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data, "image/png"
+    return None
+
+
+def _write_mp3_tags(path: Path, meta: dict,
+                    art: Optional[tuple[bytes, str]] = None) -> None:
+    """Write ID3v2.3 tags. Only frames we have a value for are touched, so a
+    byte-copied progressive MP3 keeps whatever the uploader already tagged it
+    with (BPM and key included)."""
+    from mutagen.id3 import (
+        ID3, ID3NoHeaderError, APIC, COMM, TALB, TCON, TDRC, TIT2, TPE1, TPE2,
+    )
 
     try:
         tags = ID3(path)
     except ID3NoHeaderError:
         tags = ID3()
-    tags["TPE1"] = TPE1(encoding=3, text=artist)
-    tags["TIT2"] = TIT2(encoding=3, text=title)
+
+    uploader = meta.get("uploader")
+    for frame, value in (
+        (TIT2, meta.get("title")),
+        (TPE1, meta.get("artist")),
+        # Album-artist doubles as "who uploaded this", but only when it adds
+        # something the artist frame doesn't already say.
+        (TPE2, uploader if uploader != meta.get("artist") else None),
+        (TALB, meta.get("album")),
+        (TCON, meta.get("genre")),
+        (TDRC, meta.get("year")),
+    ):
+        if value:
+            tags.add(frame(encoding=3, text=value))
+
+    if meta.get("url"):
+        tags.add(COMM(encoding=3, lang="eng", desc="", text=meta["url"]))
+
+    if art:
+        data, mime = art
+        tags.delall("APIC")
+        tags.add(APIC(encoding=3, mime=mime, type=3, desc="", data=data))
+
+    # v2.3 rather than v2.4: Rekordbox and Serato read it most reliably, and
+    # mutagen downgrades TDRC to TYER/TDAT for us on save.
     tags.save(path, v2_version=3)
 
 
 async def _youtube_fallback(
     user: str, title: str, output_dir: Path, label: str,
     track_id: Optional[int] = None, status: Optional[dict] = None,
+    *, client=None, meta: Optional[dict] = None,
 ) -> AsyncGenerator[str, None]:
     """When SC returns nothing playable, try yt-dlp ytsearch1 against YouTube.
     Output filename is prefixed [YouTube] so the source is unambiguous. Sets
@@ -663,18 +847,32 @@ async def _youtube_fallback(
         return
 
     query = f"{user} {title}"
-    out_template = output_dir / f"[YouTube] [{sanitize_filename(user)}] {sanitize_filename(title)}.%(ext)s"
+    # The literal part of -o is a yt-dlp output template, so any '%' the track
+    # title carries would be read as a field reference: "Mix %(id)s Vol 2" gets
+    # expanded to the YouTube id, and a bare "%(" aborts the run outright with
+    # "incomplete format key". Double them so they survive as literal percents;
+    # only our own trailing %(ext)s stays live.
+    stem = f"[YouTube] [{sanitize_filename(user)}] {sanitize_filename(title)}".replace("%", "%%")
+    out_template = output_dir / f"{stem}.%(ext)s"
+    # yt-dlp reports where it actually put the file rather than us reconstructing
+    # the name. Sidecar rather than --print because --print implies --quiet,
+    # which would swallow the progress lines we stream to the client below.
+    path_file = output_dir / f".ytpath-{uuid.uuid4().hex}"
     yield sse({"type": "info", "msg": f"{label} YT fallback: ytsearch1 {query!r}"})
 
     cmd = [
         "yt-dlp",
         f"ytsearch1:{query}",
-        "-x", "--audio-format", "mp3",
-        "--embed-metadata",
+        # 320K makes yt-dlp pass -b:a 320k to ffmpeg. Without it --audio-format
+        # mp3 defaults to -q:a 5 VBR, the same beatgrid-drift trap we avoid on
+        # the SoundCloud path. --embed-metadata is gone because we now write a
+        # full tag set from the SoundCloud track below, overwriting it anyway.
+        "-x", "--audio-format", "mp3", "--audio-quality", "320K",
         "--no-playlist",
         "--newline",
         "--js-runtimes", "bun",
         "-o", str(out_template),
+        "--print-to-file", "after_move:filepath", str(path_file),
     ]
     if YT_COOKIES_FILE is not None:
         cmd += ["--cookies", str(YT_COOKIES_FILE)]
@@ -692,25 +890,27 @@ async def _youtube_fallback(
         if line:
             yield sse({"type": "log", "msg": f"{label} YT  {line}"})
     rc = await proc.wait()
+    produced = _read_yt_path(path_file, output_dir)
     if rc == 0:
         yield sse({"type": "info", "msg": f"{label} YT fallback: saved"})
-        # The template ends in .%(ext)s and -x converts to mp3, so the post-
-        # extraction filename is deterministic. If yt-dlp's filename sanitizer
-        # diverges from ours and the path doesn't match, skip the saved event
-        # rather than guessing.
-        expected_mp3 = output_dir / f"[YouTube] [{sanitize_filename(user)}] {sanitize_filename(title)}.mp3"
-        if expected_mp3.exists():
+        if produced is not None and produced.exists():
             # Replace yt-dlp's embedded YouTube metadata with the SoundCloud
-            # artist/title so the tags match the filename and source intent.
+            # metadata — that's still the right metadata for this track, even
+            # though the audio came from YouTube.
+            tag_meta = meta or {"title": title, "artist": user, "uploader": user}
             try:
-                await asyncio.to_thread(_write_mp3_tags, expected_mp3, user, title)
+                art = None
+                if client is not None:
+                    art = await _fetch_artwork(client, tag_meta.get("artwork_url", ""))
+                await asyncio.to_thread(_write_mp3_tags, produced, tag_meta, art)
                 yield sse({"type": "info",
-                           "msg": f"{label} YT  tagged artist/title from SoundCloud"})
+                           "msg": f"{label} YT  tagged from SoundCloud"
+                                  + (" + artwork" if art else "")})
             except Exception as e:
                 yield sse({"type": "info", "msg": f"{label} YT  tag write failed: {e}"})
             if status is not None:
                 status["ok"] = True
-            yield _saved_event(expected_mp3, track_id)
+            yield _saved_event(produced, track_id)
         else:
             yield sse({"type": "info",
                        "msg": f"{label} YT fallback: couldn't locate output for download link"})
