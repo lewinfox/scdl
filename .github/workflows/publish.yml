@@ -10,11 +10,30 @@ on:
       - "index.html"
       - "login.html"
       - "pyproject.toml"
+      - "Makefile"
+      - "scripts/**"
       - ".github/workflows/publish.yml"
+  # Run the checks on PRs too, so a broken import is caught before merge
+  # rather than by Fly's smoke check after deploy.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Lints, checks formatting, and imports main.py on the same Python the
+      # image runs — the Makefile derives that version from the Dockerfile, so
+      # the two can't drift apart.
+      - run: make check
+
   publish:
+    needs: check
+    # PRs get the checks; only pushes to main build and ship.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

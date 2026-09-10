@@ -21,7 +21,7 @@ from pathlib import Path
 # Any host in the youtube.com family. The "#HttpOnly_" prefix is part of the
 # Netscape format, not a comment marker — filtering on a leading "#" alone
 # would smuggle in every other site's httponly cookies.
-YOUTUBE = re.compile(r"^(#HttpOnly_)?\.?([a-z0-9-]+\.)*youtube\.com$", re.I)
+YOUTUBE = re.compile(r"^(#HttpOnly_)?\.?([a-z0-9-]+\.)*youtube\.com$", re.IGNORECASE)
 
 # Without at least one of these the jar carries no session and is not worth
 # deploying.
@@ -36,11 +36,14 @@ def extract(browser: str, raw: Path) -> None:
     """Dump the browser's whole cookie jar to `raw` via yt-dlp."""
     cmd = [
         "yt-dlp",
-        "--cookies-from-browser", browser,
-        "--cookies", str(raw),
+        "--cookies-from-browser",
+        browser,
+        "--cookies",
+        str(raw),
         "--skip-download",
         "--no-warnings",
-        "--js-runtimes", "bun,node,deno",
+        "--js-runtimes",
+        "bun,node,deno",
         PROBE_URL,
     ]
     print(f"$ {' '.join(cmd)}", file=sys.stderr)
@@ -67,18 +70,23 @@ def scope(raw: Path, out: Path) -> tuple[int, int]:
             kept.append(line)
         else:
             dropped += 1
-    out.write_text("# Netscape HTTP Cookie File\n" + "\n".join(kept) + "\n",
-                   encoding="utf-8")
+    out.write_text(
+        "# Netscape HTTP Cookie File\n" + "\n".join(kept) + "\n", encoding="utf-8"
+    )
     out.chmod(0o600)
     return len(kept), dropped
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--browser", default="firefox",
-                    help="browser to read cookies from (default: firefox)")
-    ap.add_argument("--out", type=Path,
-                    help="write the scoped jar here instead of a temp file")
+    ap.add_argument(
+        "--browser",
+        default="firefox",
+        help="browser to read cookies from (default: firefox)",
+    )
+    ap.add_argument(
+        "--out", type=Path, help="write the scoped jar here instead of a temp file"
+    )
     args = ap.parse_args()
 
     tmp = Path(tempfile.mkdtemp(prefix="scdl-cookies-"))
@@ -92,8 +100,10 @@ def main() -> None:
             for line in scoped.read_text(encoding="utf-8").splitlines()
             if line.count("\t") >= 6
         }
-        print(f"\nkept {kept} youtube.com cookies, dropped {dropped} others",
-              file=sys.stderr)
+        print(
+            f"\nkept {kept} youtube.com cookies, dropped {dropped} others",
+            file=sys.stderr,
+        )
         if not names & AUTH_COOKIES:
             sys.exit(
                 "None of the session cookies are present, so this jar would "
