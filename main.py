@@ -692,6 +692,15 @@ async def stream_direct_api(
             return
         yield sse({"type": "info", "msg": f"client_id: {client_id}"})
 
+        if is_shortlink(req.url):
+            try:
+                expanded = await expand_shortlink(client, req.url)
+            except Exception as e:
+                yield sse({"type": "error", "msg": f"could not expand short link: {e}"})
+                return
+            yield sse({"type": "info", "msg": f"short link -> {expanded}"})
+            req = req.model_copy(update={"url": expanded})
+
         try:
             r = await client.get(
                 f"{SC_API}/resolve", params={"url": req.url, "client_id": client_id}
@@ -1442,6 +1451,21 @@ def sse(payload: dict) -> str:
 def strip_url(url: str) -> str:
     parts = urlsplit(url)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+SHORTLINK_HOSTS = {"on.soundcloud.com", "soundcloud.app.goo.gl"}
+
+
+def is_shortlink(url: str) -> bool:
+    return urlsplit(url).netloc.lower() in SHORTLINK_HOSTS
+
+
+async def expand_shortlink(client, url: str) -> str:
+    """The api-v2 /resolve endpoint 404s on on.soundcloud.com share links, so
+    follow the redirect ourselves and hand it the canonical permalink."""
+    r = await client.get(url)
+    r.raise_for_status()
+    return strip_url(str(r.url))
 
 
 if __name__ == "__main__":
