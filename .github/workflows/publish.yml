@@ -10,6 +10,7 @@ on:
       - "index.html"
       - "login.html"
       - "pyproject.toml"
+      - "uv.lock"
       - "Makefile"
       - "scripts/**"
       - ".github/workflows/publish.yml"
@@ -25,9 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
-      # Lints, checks formatting, and imports main.py on the same Python the
-      # image runs — the Makefile derives that version from the Dockerfile, so
-      # the two can't drift apart.
+      # Checks uv.lock is current, lints, checks formatting, and imports
+      # main.py on the same Python the image runs — the Makefile derives that
+      # version from the Dockerfile, so the two can't drift apart.
       - run: make check
 
   publish:

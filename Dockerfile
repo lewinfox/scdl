@@ -13,19 +13,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
 ENV PATH=/root/.bun/bin:$PATH
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.2 /uv /bin/uv
+
+# Use the image's Python rather than letting uv download its own, and compile
+# bytecode up front for a faster boot.
+ENV UV_PYTHON_DOWNLOADS=0 \
+    UV_COMPILE_BYTECODE=1
+
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
-        "fastapi>=0.110" \
-        "uvicorn>=0.27" \
-        # [default] pulls in yt-dlp-ejs, the script bun runs to solve
-        # YouTube's JS challenges. Without it every YouTube download fails
-        # with "The page needs to be reloaded".
-        "yt-dlp[default]>=2025.11" \
-        "httpx>=0.27" \
-        "mutagen>=1.47"
+# Dependencies first, in their own layer, so editing main.py doesn't
+# reinstall them. --locked fails the build if uv.lock is out of date with
+# pyproject.toml rather than quietly resolving something new.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project --no-cache
 
 COPY main.py index.html login.html ./
+
+ENV PATH=/app/.venv/bin:$PATH
 
 EXPOSE 8765
 

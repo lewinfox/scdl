@@ -93,11 +93,13 @@ make format   # apply ruff formatting and autofixes
 CI runs `make check` on every PR and before any build, so a broken import is
 caught before merge rather than by Fly's smoke check after deploy.
 
+Dependencies are declared once, in `pyproject.toml`, and resolved into
+`uv.lock`. `make check`, local runs and the Docker image all install from that
+lock, so they get the same versions. `make check` fails if the lock is out of
+date; run `uv lock` after editing the dependency list.
+
 The import step matters more than it looks. It runs against the Python version
-parsed out of the `Dockerfile`, and the dependency list parsed out of `main.py`'s
-PEP 723 header — derived rather than declared, so there is no fourth copy of
-either to fall out of step. Everything is on Python 3.14 now (`Dockerfile`,
-`pyproject.toml`, `.python-version`, the PEP 723 header); when local and
+parsed out of the `Dockerfile`, so the two can't drift apart. When local and
 deployed disagreed on the version, a bad annotation passed locally and crashed
 the container on boot.
 
@@ -176,11 +178,11 @@ SoundCloud OAuth token is never logged.
 ## Local dev
 
 ```sh
-uv run main.py
+make run    # uv run --locked main.py
 ```
 
-Boots on `http://127.0.0.1:8765`. Inline PEP 723 metadata in `main.py`
-resolves deps automatically. Data dir defaults to `./data` (gitignored).
+Boots on `http://127.0.0.1:8765`. uv creates `.venv` from `uv.lock` on first
+run. Data dir defaults to `./data` (gitignored).
 
 The bundled `docker-compose.yml` builds from source rather than pulling
 GHCR — handy when iterating on the Dockerfile itself:

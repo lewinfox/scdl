@@ -1,13 +1,3 @@
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "fastapi>=0.110",
-#   "uvicorn>=0.27",
-#   "yt-dlp[default]>=2025.11",
-#   "httpx>=0.27",
-#   "mutagen>=1.47",
-# ]
-# ///
 import asyncio
 import hashlib
 import hmac
