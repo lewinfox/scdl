@@ -1,13 +1,11 @@
 FLY_APP ?= scdl-lewinfox
 BROWSER ?= firefox
 
-# Derived, not declared, so they can't drift from what actually ships:
-# the Python the container runs, and the deps main.py asks for.
+# Derived, not declared, so it can't drift from what actually ships: the
+# Python the container runs.
 PY_VERSION = $(shell sed -n 's/^FROM python:\([0-9.]*\)-.*/\1/p' Dockerfile)
-PY_DEPS = $(shell sed -n '/^# dependencies = \[/,/^# \]/p' main.py \
-             | sed -n 's/^#   "\(.*\)",*$$/--with "\1"/p' | tr '\n' ' ')
 
-.PHONY: help check format yt-cookies yt-cookies-check yt-cookies-revoke dev secrets
+.PHONY: help check format sync run yt-cookies yt-cookies-check yt-cookies-revoke dev secrets
 
 help:  ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -15,27 +13,30 @@ help:  ## Show this help
 
 ## --- Checks ----------------------------------------------------------------
 
-check:  ## Lint, format-check, and import main.py on the container's Python
+check:  ## Check the lockfile, lint, format-check, and import main.py on the container's Python
 	@command -v uv >/dev/null || { echo "need uv (https://docs.astral.sh/uv/)"; exit 1; }
+	@echo "==> uv lock --check"
+	@uv lock --check
 	@echo "==> ruff format --check"
-	@uvx ruff format --check .
+	@uv run --locked ruff format --check .
 	@echo "==> ruff check"
-	@uvx ruff check .
+	@uv run --locked ruff check .
 	@echo "==> import main.py under Python $(PY_VERSION) (what the image runs)"
-	@# Not a formality. Local dev is on 3.14, where PEP 649 defers annotation
-	@# evaluation; the image is on 3.13, where a bad annotation raises at import
-	@# and the deploy smoke-check fails. Import on the version that ships.
-	@# --no-project because pyproject.toml pins a newer requires-python than
-	@# the image, which would otherwise refuse to resolve.
-	@cd $(CURDIR) && uv run --quiet --no-project --python $(PY_VERSION) $(PY_DEPS) \
-		python -c "import main; print('   main.py imports cleanly on $(PY_VERSION)')"
+	@# Not a formality. When local dev and the image ran different Pythons, a
+	@# bad annotation imported fine on one and crashed the container on boot.
+	@# Import on the version that ships, with the locked dependencies.
+	@uv run --locked --python $(PY_VERSION) python -c \
+		"import main; print('   main.py imports cleanly on $(PY_VERSION)')"
 	@echo "==> python syntax: scripts/"
-	@uv run --quiet --no-project --python $(PY_VERSION) python -m compileall -q scripts/
+	@uv run --locked --python $(PY_VERSION) python -m compileall -q scripts/
 	@echo "OK"
 
 format:  ## Apply ruff formatting and autofixes
-	@uvx ruff format .
-	@uvx ruff check --fix .
+	@uv run --locked ruff format .
+	@uv run --locked ruff check --fix .
+
+sync:  ## Install the locked dependencies into .venv
+	@uv sync --locked
 
 ## --- YouTube cookies -------------------------------------------------------
 ##
@@ -53,7 +54,7 @@ yt-cookies:  ## Re-export YouTube cookies (BROWSER=firefox) and push to Fly
 	@# The jar goes browser -> filter -> flyctl down a pipe. It is never
 	@# written anywhere we would then have to remember to shred.
 	@command -v uv >/dev/null || { echo "need uv (https://docs.astral.sh/uv/)"; exit 1; }
-	@COOKIES="$$(uv run --quiet --with yt-dlp python scripts/yt-cookies.py --browser $(BROWSER))" \
+	@COOKIES="$$(uv run --quiet --locked python scripts/yt-cookies.py --browser $(BROWSER))" \
 		&& [ -n "$$COOKIES" ] \
 		&& flyctl secrets set SCDL_YT_COOKIES="$$COOKIES" -a $(FLY_APP)
 	@echo "Done. Check the banner in the UI has cleared."
@@ -72,6 +73,9 @@ yt-cookies-revoke:  ## Remove the cookies from Fly (the fallback keeps working, 
 	@flyctl secrets unset SCDL_YT_COOKIES -a $(FLY_APP)
 
 ## --- Local -----------------------------------------------------------------
+
+run:  ## Run the app locally without Docker, on http://127.0.0.1:8765
+	uv run --locked main.py
 
 dev:  ## Run the app locally in Docker with live-mounted source
 	docker compose up --build
