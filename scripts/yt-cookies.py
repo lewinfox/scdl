@@ -48,8 +48,10 @@ def extract(browser: str, raw: Path) -> None:
     ]
     print(f"$ {' '.join(cmd)}", file=sys.stderr)
     # A non-zero exit is expected and fine: YouTube's anti-bot challenge often
-    # fails here, but the jar is written on the way out either way.
-    subprocess.run(cmd, check=False)
+    # fails here, but the jar is written on the way out either way. yt-dlp's
+    # progress chatter goes to stderr: our stdout is the jar itself, and the
+    # Makefile captures it whole into the secret.
+    subprocess.run(cmd, check=False, stdout=sys.stderr)
     if not raw.exists():
         sys.exit(
             f"yt-dlp wrote no cookie file. Is {browser} installed and logged "
