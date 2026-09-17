@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.14"
 ENV PATH=/root/.bun/bin:$PATH
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.2 /uv /bin/uv
+
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
+RUN uv pip install --system --no-cache \
         "fastapi>=0.110" \
         "uvicorn>=0.27" \
         # [default] pulls in yt-dlp-ejs, the script bun runs to solve
