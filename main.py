@@ -3,7 +3,7 @@
 # dependencies = [
 #   "fastapi>=0.110",
 #   "uvicorn>=0.27",
-#   "yt-dlp>=2024.10",
+#   "yt-dlp[default]>=2025.11",
 #   "httpx>=0.27",
 #   "mutagen>=1.47",
 # ]
@@ -208,9 +208,10 @@ _yt_rejected_at: float | None = None
 def _yt_cookie_status() -> dict:
     """Describe the state of the YouTube cookies for the UI.
 
-    state is one of: missing (none configured), rejected (YouTube turned us
-    away), expired (every auth cookie is past its date), soon (the earliest
-    expires within a week), ok.
+    state is one of: missing (none configured), invalid (the file isn't a
+    cookie jar yt-dlp will load), rejected (YouTube turned us away), expired
+    (every auth cookie is past its date), soon (the earliest expires within a
+    week), ok.
     """
     if YT_COOKIES_FILE is None:
         return {
@@ -228,6 +229,7 @@ def _yt_cookie_status() -> dict:
     # Netscape format: domain, flag, path, secure, expiry, name, value.
     # httponly cookies are prefixed "#HttpOnly_", so they are data, not comments.
     expiries = []
+    malformed = False
     try:
         for line in YT_COOKIES_FILE.read_text().splitlines():
             if not line.strip() or (
@@ -235,7 +237,13 @@ def _yt_cookie_status() -> dict:
             ):
                 continue
             parts = line.split("\t")
-            if len(parts) < 6 or parts[5] not in _YT_AUTH_COOKIES:
+            if len(parts) != 7:
+                # yt-dlp skips these, but a stray line starting with "[" or "{"
+                # makes it reject the whole file as JSON — e.g. its own log
+                # output captured into the secret by a bad export.
+                malformed = True
+                continue
+            if parts[5] not in _YT_AUTH_COOKIES:
                 continue
             expiry = int(parts[4] or 0)
             if expiry:  # 0 means a session cookie, which has no date to check
@@ -243,6 +251,12 @@ def _yt_cookie_status() -> dict:
     except OSError, ValueError:
         return {"state": "ok", "detail": ""}  # unreadable/odd: don't cry wolf
 
+    if malformed:
+        return {
+            "state": "invalid",
+            "detail": "YouTube cookies file is malformed — re-run make "
+            "yt-cookies. DRM-protected tracks can't be downloaded.",
+        }
     if not expiries:
         return {"state": "ok", "detail": ""}
     soonest = min(expiries)

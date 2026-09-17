@@ -1298,7 +1298,9 @@
                 ytBanner.textContent = s.detail;
                 ytBanner.classList.toggle(
                     "bad",
-                    s.state === "expired" || s.state === "rejected",
+                    s.state === "expired" ||
+                        s.state === "rejected" ||
+                        s.state === "invalid",
                 );
                 ytBanner.hidden = false;
             }
