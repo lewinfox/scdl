@@ -1256,19 +1256,33 @@
 
             const ssEl = document.getElementById("server-status");
             const ssLabel = ssEl.querySelector(".ss-label");
+            // A busy server (many transcodes at once) can answer slowly, so
+            // only call it offline after several pings in a row fail.
+            const PING_TIMEOUT_MS = 3000;
+            const PING_FAILS_BEFORE_OFFLINE = 3;
+            let pingFails = 0;
+            let pingInFlight = false;
             async function pingServer() {
+                if (pingInFlight) return;
+                pingInFlight = true;
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), PING_TIMEOUT_MS);
                 try {
-                    const ctrl = new AbortController();
-                    const t = setTimeout(() => ctrl.abort(), 800);
                     const r = await fetch("api/ping", {
                         cache: "no-store",
                         signal: ctrl.signal,
                     });
-                    clearTimeout(t);
                     if (!r.ok) throw 0;
+                    pingFails = 0;
                     setServerStatus(true);
                 } catch {
-                    setServerStatus(false);
+                    pingFails++;
+                    if (pingFails >= PING_FAILS_BEFORE_OFFLINE) {
+                        setServerStatus(false);
+                    }
+                } finally {
+                    clearTimeout(t);
+                    pingInFlight = false;
                 }
             }
             function setServerStatus(up) {
