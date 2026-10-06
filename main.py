@@ -1219,6 +1219,37 @@ def _describe_tags(meta: dict, art: tuple[bytes, str] | None) -> str:
     return " ".join(parts)
 
 
+def _audio_sha256(path: Path) -> str:
+    """SHA-256 of the MP3's audio only, skipping the ID3v2 block at the start
+    and any ID3v1 block at the end, so retagging doesn't change the hash."""
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        head = f.read(10)
+        start = 0
+        if head[:3] == b"ID3" and len(head) == 10:
+            # The ID3v2 size is 4 "syncsafe" bytes of 7 bits each and excludes
+            # the 10-byte header (and the 10-byte footer, if the flag says so).
+            body = 0
+            for b in head[6:10]:
+                body = (body << 7) | (b & 0x7F)
+            start = 10 + body + (10 if head[5] & 0x10 else 0)
+        end = size
+        if size - start >= 128:
+            f.seek(size - 128)
+            if f.read(3) == b"TAG":
+                end -= 128
+        h = hashlib.sha256()
+        f.seek(start)
+        remaining = max(end - start, 0)
+        while remaining:
+            chunk = f.read(min(remaining, 1 << 20))
+            if not chunk:
+                break
+            h.update(chunk)
+            remaining -= len(chunk)
+    return h.hexdigest()
+
+
 def _write_mp3_tags(
     path: Path, meta: dict, art: tuple[bytes, str] | None = None
 ) -> None:
@@ -1235,6 +1266,7 @@ def _write_mp3_tags(
         TIT2,
         TPE1,
         TPE2,
+        TXXX,
         ID3NoHeaderError,
     )
 
@@ -1264,6 +1296,10 @@ def _write_mp3_tags(
         data, mime = art
         tags.delall("APIC")
         tags.add(APIC(encoding=3, mime=mime, type=3, desc="", data=data))
+
+    # Hash the audio as it sits on disk now; saving the tags below only
+    # rewrites the ID3 block, which the hash skips.
+    tags.add(TXXX(encoding=3, desc="AUDIO_SHA256", text=_audio_sha256(path)))
 
     # v2.3 rather than v2.4: Rekordbox and Serato read it most reliably, and
     # mutagen downgrades TDRC to TYER/TDAT for us on save.
