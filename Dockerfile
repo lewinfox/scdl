@@ -1,10 +1,12 @@
 FROM python:3.14-slim
 
+# git: uv fetches cratelib from GitHub.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
         ca-certificates \
         unzip \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp needs a JS runtime to extract YouTube formats. Bun is the smallest
