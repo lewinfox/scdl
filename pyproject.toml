@@ -16,7 +16,12 @@ dependencies = [
     "yt-dlp[default]>=2025.11",
     "httpx>=0.27",
     "mutagen>=1.47",
+    # Only for the audio hash (TXXX:AUDIO_SHA256), shared with music-sync.
+    "cratelib",
 ]
+
+[tool.uv.sources]
+cratelib = { git = "https://github.com/lewinfox/cratelib", branch = "main" }
 
 [dependency-groups]
 dev = [
